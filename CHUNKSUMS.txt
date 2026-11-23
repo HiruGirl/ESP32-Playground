@@ -1,0 +1,10 @@
+ce12398b45f31d82b73b36be250f41edb8ae1391df32acc1725d8033df410add  riscv32-esp-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part000
+ae3440ce31e6d66c1b6609f190f2ec4576856ef54818a63a08172732dadfe0ac  riscv32-esp-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part001
+01b6d517b905ba97f4fc6ed395d6c030d06fc1ef9505a32f1e5c0c804358c978  riscv32-esp-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part002
+98a7c842af02de3f5e2c037099f53ab28999e5ad4fd954d97cda16ec1699f2f1  riscv32-esp-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part003
+0fc7f366d1dcfd9e2466952d47918e346d5f572d1658f58f3108a05a55fdc785  riscv32-esp-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part004
+88721122325b45900784d84df9cd8ed62bed777f18d7a8ea2c31a174f233e39d  xtensa-esp32-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part000
+c474bdc93dd7dddd19eebff3fff5aba92a188c08c0a9e4417a2feba5e9dae5a3  xtensa-esp32-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part001
+d13e3380bf43f5b0e89c70fdc70bbe3f52a111dda51e6e3ec8653ead0894aba1  xtensa-esp32-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part002
+2f048b9ffec82418c96519d2782208308b79e769e585230d34ba5b8867d02d90  xtensa-esp32s3-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part000
+747621b923447cb8583c13e7cdc660cdea7200015ff3a7cac824ea5da1893e42  xtensa-esp32s3-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz.part001

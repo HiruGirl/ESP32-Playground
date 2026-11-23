@@ -5,6 +5,10 @@
 # The same tag-staging trick is used in reverse for the final release upload.
 name: toolchain-cache
 on:
+  push:
+    paths:
+      - ".github/workflows/toolchain-cache.yml"
+      - "toolchain.trigger"
   workflow_dispatch:
     inputs:
       tag:
@@ -49,6 +53,8 @@ jobs:
           git clean -fdx >/dev/null 2>&1 || true
           git add -f chunks
           git commit -m "toolchain cache $(date -u +%Y%m%dT%H%M%SZ)"
-          git push origin "HEAD:refs/tags/${{ inputs.tag }}"
-          echo "pushed tag ${{ inputs.tag }}"
+          TAG="${{ inputs.tag }}"
+          TAG="${TAG:-cache-toolchains-gcc84}"
+          git push origin "HEAD:refs/tags/$TAG"
+          echo "pushed tag $TAG"
           cat FULLSUMS.txt

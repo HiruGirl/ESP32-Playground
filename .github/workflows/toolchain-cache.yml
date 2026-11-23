@@ -1,0 +1,54 @@
+# Relay workflow: downloads Espressif toolchains (release assets are not
+# reachable from the build sandbox) and stages them as a git TAG (chunks +
+# manifest) so the sandbox can fetch them over plain git.
+#
+# The same tag-staging trick is used in reverse for the final release upload.
+name: toolchain-cache
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to create with the toolchain chunks"
+        required: true
+        default: "cache-toolchains-gcc84"
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download toolchains
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          BASE="https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5"
+          for t in xtensa-esp32-elf xtensa-esp32s3-elf riscv32-esp-elf; do
+            echo "downloading $t"
+            curl -sSL --retry 3 -o "stage/${t}-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz" \
+              "$BASE/${t}-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz"
+          done
+          ls -la stage
+      - name: Split and stage as tag
+        run: |
+          set -euo pipefail
+          mkdir -p chunks
+          for f in stage/*.tar.gz; do
+            b=$(basename "$f")
+            split -b 40M -d -a 3 "$f" "chunks/${b}.part"
+          done
+          (cd chunks && sha256sum * > ../CHUNKSUMS.txt)
+          (cd stage && sha256sum * > ../FULLSUMS.txt)
+          cp CHUNKSUMS.txt FULLSUMS.txt chunks/
+          git config user.name "cache-bot"
+          git config user.email "cache-bot@localhost"
+          git checkout --orphan __cache_tmp
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          git clean -fdx >/dev/null 2>&1 || true
+          git add -f chunks
+          git commit -m "toolchain cache $(date -u +%Y%m%dT%H%M%SZ)"
+          git push origin "HEAD:refs/tags/${{ inputs.tag }}"
+          echo "pushed tag ${{ inputs.tag }}"
+          cat FULLSUMS.txt

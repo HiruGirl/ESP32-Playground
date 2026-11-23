@@ -356,3 +356,16 @@ index 5a60acff89..780fee4c1d 100644
      mc->desc = "Espressif ESP32S3 machine";
      mc->init = esp32s3_machine_init;
      mc->max_cpus = 2;
+diff --git a/subprojects/slirp.wrap b/subprojects/slirp.wrap
+index f367c01da1..bdcc16aa7a 100644
+--- a/subprojects/slirp.wrap
++++ b/subprojects/slirp.wrap
+@@ -1,6 +1,6 @@
+ [wrap-git]
+-url = https://gitlab.freedesktop.org/slirp/libslirp.git
+-revision = dd76415fce457e319d665eb8210d05c5731360ba
++url = https://github.com/deepin-community/libslirp.git
++revision = cbf82f7205852bbd5a86b78709a241285a5ac266
+ 
+ [provide]
+ slirp = libslirp_libdep

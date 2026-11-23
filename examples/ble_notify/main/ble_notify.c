@@ -12,6 +12,8 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+void ble_store_config_init(void);
+
 static const ble_uuid128_t SVC_UUID = BLE_UUID128_INIT(
     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01);
 static const ble_uuid128_t CHR_UUID = BLE_UUID128_INIT(
@@ -97,7 +99,7 @@ static void notify_task(void *arg)
             uint8_t buf[4] = { s_counter & 0xFF, (s_counter >> 8) & 0xFF,
                                (s_counter >> 16) & 0xFF, (s_counter >> 24) & 0xFF };
             struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, sizeof(buf));
-            ble_gatts_notify_custom(s_conn, s_val_handle, om);
+            ble_gattc_notify_custom(s_conn, s_val_handle, om);
             printf("notified counter=%u\n", (unsigned)s_counter);
         }
     }
@@ -120,6 +122,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_nimble_hci_and_controller_init());
     nimble_port_init();
+    ble_store_config_init();
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_gatts_count_cfg(gatt_svcs);

@@ -20,8 +20,23 @@ build_one() { # name target
   rm -rf "$BUILD/$name"
   mkdir -p "$BUILD/$name"
   cp -r "$ROOT/examples/$name/." "$BUILD/$name/"
+  # Playground config as sdkconfig.defaults (survives set-target, used at
+  # first configure). NimBLE host + 1kHz tick (required by arduino-esp32).
+  cat > "$BUILD/$name/sdkconfig.defaults" <<'CFG'
+CONFIG_BT_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+CONFIG_FREERTOS_HZ=1000
+CFG
   if ! (cd "$BUILD/$name" \
-      && python3 "$IDF_PATH/tools/idf.py" set-target "$target" >"$BUILD/$name.log" 2>&1 \
+      && python3 "$IDF_PATH/tools/idf.py" set-target "$target" >"$BUILD/$name.log" 2>&1); then
+    echo "FAILED $name ($target) (set-target)"
+    tail -5 "$BUILD/$name.log"
+    return 1
+  fi
+  # Apply playground config after set-target (set-target regenerates sdkconfig).
+  if ! (cd "$BUILD/$name" \
       && python3 "$IDF_PATH/tools/idf.py" build >>"$BUILD/$name.log" 2>&1); then
     echo "FAILED $name ($target)"
     grep -E "error:|fatal|undefined ref|CMake Error" "$BUILD/$name.log" | head -5

@@ -50,3 +50,14 @@ void loop()
     }
     delay(10);
 }
+
+// Custom entry point (arduino-as-IDF-component): run the sketch directly.
+extern "C" void app_main(void)
+{
+    initArduino();
+    setup();
+    for (;;) {
+        loop();
+        delay(2);
+    }
+}

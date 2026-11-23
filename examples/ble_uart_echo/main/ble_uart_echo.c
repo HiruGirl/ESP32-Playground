@@ -13,6 +13,8 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+void ble_store_config_init(void);
+
 static const ble_uuid128_t NUS_SVC = BLE_UUID128_INIT(
     0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e);
 static const ble_uuid128_t NUS_RX = BLE_UUID128_INIT(
@@ -34,7 +36,7 @@ static int gatt_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt
             printf("NUS RX (%d bytes): %.*s\n", len, len, buf);
             if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
                 struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, len);
-                ble_gatts_notify_custom(s_conn, s_tx_val, om);
+                ble_gattc_notify_custom(s_conn, s_tx_val, om);
             }
         }
         return 0;
@@ -124,6 +126,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_nimble_hci_and_controller_init());
     nimble_port_init();
+    ble_store_config_init();
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_gatts_count_cfg(gatt_svcs);

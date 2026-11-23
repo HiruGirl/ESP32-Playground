@@ -68,7 +68,7 @@ void app_main(void)
     xEventGroupWaitBits(s_events, CONNECTED_BIT, false, true, portMAX_DELAY);
 
     esp_mqtt_client_config_t cfg = {0};
-    cfg.broker.address.uri = BROKER_URI;
+    cfg.uri = BROKER_URI;
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);

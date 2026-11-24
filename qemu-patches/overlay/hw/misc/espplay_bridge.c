@@ -216,7 +216,8 @@ static void espplay_handle_cmd(EspplayBridgeState *s, uint8_t type,
         break;
     case ESPPLAY_CMD_I2CDEV_ATTACH:
         if (len >= 3) {
-            espplay_i2cdev_attach(p[0], p[1], p[2]);
+            /* wire order is u8 dev/kind, u8 bus, u8 addr (backend "i2cAttach") */
+            espplay_i2cdev_attach(p[1], p[2], p[0]);
         }
         break;
     case ESPPLAY_CMD_WIFI_CONFIG:

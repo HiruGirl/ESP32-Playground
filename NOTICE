@@ -1,0 +1,17 @@
+ESP32 Playground
+Copyright (c) 2026 ESP32 Playground contributors
+
+This product includes software developed by third parties. See
+THIRD_PARTY.md for the full list and their license terms.
+
+Notably:
+
+- QEMU and the Espressif QEMU fork (esp32 machine emulation) are distributed
+  under the GNU General Public License, version 2 (with certain parts under
+  permissive licenses). The patched sources built from `qemu-patches/` are
+  provided in that directory; the complete QEMU source is available from
+  https://github.com/espressif/qemu (commit 093b0c3).
+- libslirp (user-mode TCP/IP) is copyright Red Hat and contributors,
+  BSD-3-Clause.
+- ESP-IDF, NimBLE and related Espressif SDK components are Apache-2.0,
+  Copyright Espressif Systems.

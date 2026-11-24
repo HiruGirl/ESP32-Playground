@@ -36,6 +36,7 @@ fetch zlib    https://codeload.github.com/madler/zlib/tar.gz/refs/tags/v1.3.1
 fetch libffi  https://codeload.github.com/libffi/libffi/tar.gz/refs/tags/v3.4.6
 fetch pcre2   https://codeload.github.com/PCRE2Project/pcre2/tar.gz/refs/tags/pcre2-10.43
 fetch glib    https://codeload.github.com/GNOME/glib/tar.gz/refs/tags/2.78.6
+fetch slirp https://codeload.github.com/deepin-community/libslirp/tar.gz/cbf82f7205852bbd5a86b78709a241285a5ac266
 fetch gpg-error https://codeload.github.com/Distrotech/libgpg-error/tar.gz/refs/heads/master
 fetch gcrypt    https://codeload.github.com/Distrotech/libgcrypt/tar.gz/refs/heads/distrotech-libgcrypt
 
@@ -215,3 +216,13 @@ fi
 echo ">>> deps done"
 pkg-config --modversion glib-2.0
 ls "$PREFIX/lib" | head -40
+
+# ----------------------------------------------------------------- libslirp
+echo ">>> building libslirp"
+if [ ! -e "$PREFIX/lib/pkgconfig/slirp.pc" ]; then
+  (cd "$SRC/slirp" && meson setup _b --prefix="$PREFIX" --libdir=lib \
+     --buildtype=release -Ddefault_library=static >/dev/null \
+    && ninja -C _b >/dev/null && ninja -C _b install >/dev/null)
+fi
+
+echo ">>> deps installed under $PREFIX"

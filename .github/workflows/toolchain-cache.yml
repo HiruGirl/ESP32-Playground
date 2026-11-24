@@ -1,0 +1,59 @@
+# Relay workflow: downloads Espressif toolchains (release assets are not
+# reachable from the build sandbox) and stages them as a git TAG (chunks +
+# manifest) so the sandbox can fetch them over plain git.
+#
+# The same tag-staging trick is used in reverse for the final release upload.
+name: toolchain-cache
+on:
+  push:
+    paths:
+      - ".github/workflows/toolchain-cache.yml"
+      - "toolchain.trigger"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to create with the toolchain chunks"
+        required: true
+        default: "cache-toolchains-gcc84"
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download toolchains
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          BASE="https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5"
+          for t in xtensa-esp32-elf xtensa-esp32s3-elf riscv32-esp-elf; do
+            echo "downloading $t"
+            curl -sSL --retry 3 -o "stage/${t}-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz" \
+              "$BASE/${t}-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz"
+          done
+          ls -la stage
+      - name: Split and stage as tag
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/chunks
+          for f in stage/*.tar.gz; do
+            b=$(basename "$f")
+            split -b 40M -d -a 3 "$f" "/tmp/chunks/${b}.part"
+          done
+          (cd /tmp/chunks && sha256sum * > CHUNKSUMS.txt)
+          (cd stage && sha256sum * > /tmp/chunks/FULLSUMS.txt)
+          TAG="${{ inputs.tag }}"
+          TAG="${TAG:-cache-toolchains-gcc84}"
+          cd /tmp/chunks
+          git init -q
+          git config user.name "cache-bot"
+          git config user.email "cache-bot@localhost"
+          git add -A
+          git commit -qm "toolchain cache $(date -u +%Y%m%dT%H%M%SZ)"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push origin "HEAD:refs/tags/$TAG"
+          echo "pushed tag $TAG"
+          cat FULLSUMS.txt

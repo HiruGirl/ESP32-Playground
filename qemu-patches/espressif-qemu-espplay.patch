@@ -1,0 +1,371 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index 8163295f34..78bc614635 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -697,6 +697,10 @@ static inline void cpu_handle_debug_exception(CPUState *cpu)
+     const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
+     CPUWatchpoint *wp;
+ 
++    /* ESP32 Playground: firmware hook breakpoints (longjmps when handled) */
++    extern bool espplay_debug_check(CPUState * cpu);
++    espplay_debug_check(cpu);
++
+     if (!cpu->watchpoint_hit) {
+         QTAILQ_FOREACH(wp, &cpu->watchpoints, entry) {
+             wp->flags &= ~BP_WATCHPOINT_HIT;
+diff --git a/hw/char/esp32_uart.c b/hw/char/esp32_uart.c
+index 103cd025af..9b76ca57af 100644
+--- a/hw/char/esp32_uart.c
++++ b/hw/char/esp32_uart.c
+@@ -23,6 +23,23 @@
+ #include "hw/qdev-properties.h"
+ #include "hw/qdev-properties-system.h"
+ #include "hw/char/esp32_uart.h"
++#include "hw/misc/espplay_bridge.h"
++
++/* ESP32 Playground: UART instance registry for bridge forwarding */
++static ESP32UARTState *espplay_uarts[4];
++static int espplay_uart_count;
++
++static int espplay_uart_index(ESP32UARTState *s)
++{
++    for (int i = 0; i < 4; i++) {
++        if (espplay_uarts[i] == s) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++void esp32_uart_rx_feed(int uart, const uint8_t *data, int len);
+ #include "trace.h"
+ 
+ 
+@@ -247,7 +264,11 @@ static gboolean uart_transmit(void *do_not_use, GIOCondition cond, void *opaque)
+ 
+     /* drain the fifo instantly, if the char device backend is not connected */
+     if (!qemu_chr_fe_backend_open(&s->chr)) {
+-        fifo8_reset(&s->tx_fifo);
++        while (fifo8_num_used(&s->tx_fifo) > 0) {
++            uint8_t b = fifo8_pop(&s->tx_fifo);
++            espplay_uart_data(espplay_uart_index(s), &b, 1);
++        }
++        esp32_uart_update_irq(s);
+         return FALSE;
+     }
+ 
+@@ -256,6 +277,7 @@ static gboolean uart_transmit(void *do_not_use, GIOCondition cond, void *opaque)
+         int r = qemu_chr_fe_write(&s->chr, &b, 1);
+         if (r == 1) {
+             fifo8_pop(&s->tx_fifo);
++            espplay_uart_data(espplay_uart_index(s), &b, 1);
+         } else {
+             s->tx_watch_handle = qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
+                                                        uart_transmit, s);
+@@ -321,6 +343,15 @@ static void uart_receive(void *opaque, const uint8_t *buf, int size)
+     esp32_uart_update_irq(s);
+ }
+ 
++void esp32_uart_receive_bytes(void *opaque, const uint8_t *buf, int size);
++
++void esp32_uart_rx_feed(int uart, const uint8_t *data, int len)
++{
++    if (uart >= 0 && uart < 4 && espplay_uarts[uart] && len > 0) {
++        uart_receive(espplay_uarts[uart], data, len);
++    }
++}
++
+ static int uart_can_receive(void *opaque)
+ {
+     ESP32UARTState *s = ESP32_UART(opaque);
+@@ -385,6 +416,10 @@ static void esp32_uart_realize(DeviceState *dev, Error **errp)
+ {
+     ESP32UARTState *s = ESP32_UART(dev);
+ 
++    if (espplay_uart_count < 4) {
++        espplay_uarts[espplay_uart_count++] = s;
++    }
++
+     qemu_chr_fe_set_handlers(&s->chr, uart_can_receive, uart_receive,
+                              uart_event, NULL, s, NULL, true);
+ }
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+index 5e25782bea..f516848a63 100644
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -18,6 +18,7 @@
+ #include "hw/irq.h"
+ #include "hw/qdev-properties.h"
+ #include "hw/gpio/esp32_gpio.h"
++#include "hw/misc/espplay_bridge.h"
+ 
+ 
+ 
+@@ -33,9 +34,14 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+     } else if (s->enable_off && addr == s->enable_off) {
+         r = s->gpio_enable;
+     } else if (s->in_off && addr == s->in_off) {
+-        /* Output-enabled pins loop back; undriven pins reflect pull-up state */
++        /* Output-enabled pins loop back; externally driven pins come from
++         * the ESP32 Playground bridge; undriven pins reflect pull-up state */
++        EspplayBridgeState *bp = espplay_bridge_get();
++        uint32_t iv = espplay_gpio_input_val(bp);
++        uint32_t im = espplay_gpio_input_mask(bp);
+         r = (s->gpio_out & s->gpio_enable) |
+-            (s->gpio_pullup & ~s->gpio_enable);
++            (iv & im & ~s->gpio_enable) |
++            (s->gpio_pullup & ~s->gpio_enable & ~im);
+     }
+ 
+     return r;
+@@ -45,6 +51,7 @@ static void esp32_gpio_write(void *opaque, hwaddr addr,
+                        uint64_t value, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
++    uint32_t before = s->gpio_out & s->gpio_enable;
+ 
+     if (s->out_off && addr == s->out_off) {
+         s->gpio_out = (uint32_t)value;
+@@ -59,6 +66,15 @@ static void esp32_gpio_write(void *opaque, hwaddr addr,
+     } else if (s->enable_w1tc_off && addr == s->enable_w1tc_off) {
+         s->gpio_enable &= ~(uint32_t)value;
+     }
++
++    /* ESP32 Playground: report output level changes to the bridge */
++    uint32_t after = s->gpio_out & s->gpio_enable;
++    uint32_t changed = before ^ after;
++    for (int pin = 0; pin < (int)s->num_gpios; pin++) {
++        if (changed & (1u << pin)) {
++            espplay_gpio_out_update(pin, (after >> pin) & 1);
++        }
++    }
+ }
+ 
+ static const MemoryRegionOps gpio_ops = {
+@@ -115,6 +131,16 @@ static void esp32_gpio_init(Object *obj)
+     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
+     s->strap_offset = A_GPIO_STRAP;
+ 
++    /* Register offsets are identical across ESP32/S3/C3 GPIO blocks. */
++    s->num_gpios = ESP_GPIO_MAX_PINS;
++    s->out_off = 0x004;
++    s->out_w1ts_off = 0x008;
++    s->out_w1tc_off = 0x00C;
++    s->enable_off = 0x020;
++    s->enable_w1ts_off = 0x024;
++    s->enable_w1tc_off = 0x028;
++    s->in_off = 0x03C;
++
+     memory_region_init_io(&s->iomem, obj, &gpio_ops, s,
+                           TYPE_ESP32_GPIO, 0x1000);
+     sysbus_init_mmio(sbd, &s->iomem);
+diff --git a/hw/misc/esp32_ledc.c b/hw/misc/esp32_ledc.c
+index 9cebea9821..643a9cf0f4 100644
+--- a/hw/misc/esp32_ledc.c
++++ b/hw/misc/esp32_ledc.c
+@@ -3,6 +3,7 @@
+ #include "qemu/log.h"
+ #include "qapi/error.h"
+ #include "hw/misc/esp32_ledc.h"
++#include "hw/misc/espplay_bridge.h"
+ 
+ #define ESP32_LEDC_REGS_SIZE (A_LEDC_CONF_REG + 4)
+ 
+@@ -99,8 +100,22 @@ static void esp32_ledc_write(void *opaque, hwaddr addr,
+     case A_LEDC_LSCH5_DUTY_REG:
+     case A_LEDC_LSCH6_DUTY_REG:
+     case A_LEDC_LSCH7_DUTY_REG:
+-        led_set_intensity(&s->led[(addr - A_LEDC_HSCH0_DUTY_REG) / 0x14], esp32_ledc_get_percent(s, value, addr));
++        {
++        int ch = (addr - A_LEDC_HSCH0_DUTY_REG) / 0x14;
++        uint32_t pct = esp32_ledc_get_percent(s, value, addr);
++        led_set_intensity(&s->led[ch], pct);
++        int tsel = ch < 8 ? (s->channel_conf0_reg[ch] & 3)
++                          : ((s->channel_conf0_reg[ch] & 3) + 4);
++        int tres = s->duty_res[tsel];
++        uint32_t conf = s->timer_conf_reg[tsel];
++        uint32_t divi = (conf >> 17) & 0xFF;
++        uint32_t divf = (conf >> 13) & 0xF;
++        uint32_t div = divi ? divi : 1;
++        uint32_t timer_hz = 80000000u / (div + (divf ? divf / 16 : 0));
++        uint32_t pwm_hz = tres ? (timer_hz >> tres) : timer_hz;
++        espplay_ledc_update(tsel, pwm_hz, ch, pct * 100);
+         break;
++        }
+     }
+ 
+ }
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index dc9ff3562c..1b44d55751 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -349,3 +349,11 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
+ 
+ # HPPA devices
+ system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
++
++# ESP32 Playground bridge (patched build)
++specific_ss.add(files(
++  'espplay_bridge.c',
++  'espplay_core.c',
++  'espplay_wifi.c',
++  'espplay_ble.c',
++  'espplay_hooks.c'))
+diff --git a/hw/riscv/esp32c3.c b/hw/riscv/esp32c3.c
+index f3a824cb23..17cd12be92 100644
+--- a/hw/riscv/esp32c3.c
++++ b/hw/riscv/esp32c3.c
+@@ -413,12 +413,20 @@ static void esp32c3_machine_init(MachineState *machine)
+     object_initialize_child(OBJECT(machine), "efuse", &ms->efuse, TYPE_ESP32C3_EFUSE);
+     object_initialize_child(OBJECT(machine), "clock", &ms->clock, TYPE_ESP32C3_CLOCK);
+     object_initialize_child(OBJECT(machine), "sha", &ms->sha, TYPE_ESP32C3_SHA);
+-    object_initialize_child(OBJECT(machine), "aes", &ms->aes, TYPE_ESP32C3_AES);
++    if (object_class_by_name(TYPE_ESP32C3_AES)) {
++        object_initialize_child(OBJECT(machine), "aes", &ms->aes, TYPE_ESP32C3_AES);
++    }
+     object_initialize_child(OBJECT(machine), "gdma", &ms->gdma, TYPE_ESP32C3_GDMA);
+-    object_initialize_child(OBJECT(machine), "rsa", &ms->rsa, TYPE_ESP32C3_RSA);
++    if (object_class_by_name(TYPE_ESP32C3_RSA)) {
++        object_initialize_child(OBJECT(machine), "rsa", &ms->rsa, TYPE_ESP32C3_RSA);
++    }
+     object_initialize_child(OBJECT(machine), "hmac", &ms->hmac, TYPE_ESP32C3_HMAC);
+-    object_initialize_child(OBJECT(machine), "ds", &ms->ds, TYPE_ESP32C3_DS);
+-    object_initialize_child(OBJECT(machine), "xts_aes", &ms->xts_aes, TYPE_ESP32C3_XTS_AES);
++    if (object_class_by_name(TYPE_ESP32C3_DS)) {
++        object_initialize_child(OBJECT(machine), "ds", &ms->ds, TYPE_ESP32C3_DS);
++    }
++    if (object_class_by_name(TYPE_ESP32C3_XTS_AES)) {
++        object_initialize_child(OBJECT(machine), "xts_aes", &ms->xts_aes, TYPE_ESP32C3_XTS_AES);
++    }
+     object_initialize_child(OBJECT(machine), "timg0", &ms->timg[0], TYPE_ESP32C3_TIMG);
+     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C3_TIMG);
+     object_initialize_child(OBJECT(machine), "systimer", &ms->systimer, TYPE_ESP32C3_SYSTIMER);
+@@ -599,15 +607,17 @@ static void esp32c3_machine_init(MachineState *machine)
+     /* AES realization */
+     {
+         ms->aes.parent.gdma = ESP_GDMA(&ms->gdma);
++        if (object_class_by_name(TYPE_ESP32C3_AES)) {
+         sysbus_realize(SYS_BUS_DEVICE(&ms->aes), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->aes), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_AES_BASE, mr, 0);
+         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->aes), 0,
+                            qdev_get_gpio_in(intmatrix_dev, ETS_AES_INTR_SOURCE));
++        }
+     }
+ 
+-    /* RSA realization */
+-    {
++    /* RSA realization (device may be absent in gcrypt-limited builds) */
++    if (object_class_by_name(TYPE_ESP32C3_RSA)) {
+         sysbus_realize(SYS_BUS_DEVICE(&ms->rsa), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->rsa), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_RSA_BASE, mr, 0);
+@@ -623,8 +633,8 @@ static void esp32c3_machine_init(MachineState *machine)
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_HMAC_BASE, mr, 0);
+     }
+ 
+-    /* Digital Signature realization */
+-    {
++    /* Digital Signature realization (device may be absent) */
++    if (object_class_by_name(TYPE_ESP32C3_DS)) {
+         ms->ds.parent.hmac = ESP_HMAC(&ms->hmac);
+         ms->ds.parent.aes = ESP_AES(&ms->aes);
+         ms->ds.parent.rsa = ESP_RSA(&ms->rsa);
+@@ -638,9 +648,11 @@ static void esp32c3_machine_init(MachineState *machine)
+     {
+         ms->xts_aes.efuse = ESP_EFUSE(&ms->efuse);
+         ms->xts_aes.clock = &ms->clock;
+-        qdev_realize(DEVICE(&ms->xts_aes), &ms->periph_bus, &error_fatal);
+-        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->xts_aes), 0);
+-        memory_region_add_subregion_overlap(sys_mem, DR_REG_AES_XTS_BASE, mr, 0);
++        if (object_class_by_name(TYPE_ESP32C3_XTS_AES)) {
++            qdev_realize(DEVICE(&ms->xts_aes), &ms->periph_bus, &error_fatal);
++            MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->xts_aes), 0);
++            memory_region_add_subregion_overlap(sys_mem, DR_REG_AES_XTS_BASE, mr, 0);
++        }
+     }
+ 
+     /* RGB display realization */
+@@ -666,6 +678,8 @@ static void esp32c3_machine_init(MachineState *machine)
+ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
++    extern void machine_class_allow_dynamic_sysbus_dev(MachineClass *mc, const char *type);
++    machine_class_allow_dynamic_sysbus_dev(mc, "espplay.bridge");
+     mc->desc = "Espressif ESP32-C3 machine";
+     mc->default_cpu_type = TYPE_ESP_RISCV_CPU;
+     mc->init = esp32c3_machine_init;
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index c3cf32e030..6e2fda388c 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -167,7 +167,9 @@ static void esp32_soc_reset(DeviceState *dev)
+         device_cold_reset(DEVICE(&s->dport));
+         device_cold_reset(DEVICE(&s->intmatrix));
+         device_cold_reset(DEVICE(&s->aes));
+-        device_cold_reset(DEVICE(&s->rsa));
++        if (object_class_by_name(TYPE_ESP32_RSA)) {
++            device_cold_reset(DEVICE(&s->rsa));
++        }
+         device_cold_reset(DEVICE(&s->gpio));
+         for (int i = 0; i < ESP32_UART_COUNT; ++i) {
+             device_cold_reset(DEVICE(&s->uart[i]));
+@@ -395,8 +397,10 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+         sysbus_connect_irq(SYS_BUS_DEVICE(&s->crosscore_int), index, target);
+     }
+ 
+-    qdev_realize(DEVICE(&s->rsa), &s->periph_bus, &error_fatal);
+-    esp32_soc_add_periph_device(sys_mem, &s->rsa, DR_REG_RSA_BASE);
++    if (object_class_by_name(TYPE_ESP32_RSA)) {
++        qdev_realize(DEVICE(&s->rsa), &s->periph_bus, &error_fatal);
++        esp32_soc_add_periph_device(sys_mem, &s->rsa, DR_REG_RSA_BASE);
++    }
+ 
+     qdev_realize(DEVICE(&s->sha), &s->periph_bus, &error_fatal);
+     esp32_soc_add_periph_device(sys_mem, &s->sha, DR_REG_SHA_BASE);
+@@ -651,7 +655,9 @@ static void esp32_soc_init(Object *obj)
+ 
+     object_initialize_child(obj, "ledc", &s->ledc, TYPE_ESP32_LEDC);
+ 
+-    object_initialize_child(obj, "rsa", &s->rsa, TYPE_ESP32_RSA);
++    if (object_class_by_name(TYPE_ESP32_RSA)) {
++        object_initialize_child(obj, "rsa", &s->rsa, TYPE_ESP32_RSA);
++    }
+ 
+     object_initialize_child(obj, "efuse", &s->efuse, TYPE_ESP32_EFUSE);
+ 
+@@ -940,6 +946,8 @@ static ram_addr_t esp32_fixup_ram_size(ram_addr_t requested_size)
+ static void esp32_machine_class_init(ObjectClass *oc, void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
++    extern void machine_class_allow_dynamic_sysbus_dev(MachineClass *mc, const char *type);
++    machine_class_allow_dynamic_sysbus_dev(mc, "espplay.bridge");
+     mc->desc = "Espressif ESP32 machine";
+     mc->init = esp32_machine_init;
+     mc->max_cpus = 2;
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+index 5a60acff89..780fee4c1d 100644
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -1108,6 +1108,8 @@ static ram_addr_t esp32s3_fixup_ram_size(ram_addr_t requested_size)
+ static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
++    extern void machine_class_allow_dynamic_sysbus_dev(MachineClass *mc, const char *type);
++    machine_class_allow_dynamic_sysbus_dev(mc, "espplay.bridge");
+     mc->desc = "Espressif ESP32S3 machine";
+     mc->init = esp32s3_machine_init;
+     mc->max_cpus = 2;
+diff --git a/subprojects/slirp.wrap b/subprojects/slirp.wrap
+index f367c01da1..bdcc16aa7a 100644
+--- a/subprojects/slirp.wrap
++++ b/subprojects/slirp.wrap
+@@ -1,6 +1,6 @@
+ [wrap-git]
+-url = https://gitlab.freedesktop.org/slirp/libslirp.git
+-revision = dd76415fce457e319d665eb8210d05c5731360ba
++url = https://github.com/deepin-community/libslirp.git
++revision = cbf82f7205852bbd5a86b78709a241285a5ac266
+ 
+ [provide]
+ slirp = libslirp_libdep

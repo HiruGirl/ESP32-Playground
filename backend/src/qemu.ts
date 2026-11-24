@@ -75,7 +75,7 @@ export class QemuSession extends EventEmitter {
       "-display", "none",
       "-serial", "none",
       "-drive", `file=${flash},if=mtd,format=raw`,
-      "-icount", String(this.cfg.icount ?? 3),
+      "-icount", String(Math.max(1, Math.min(this.cfg.icount ?? 3, 10))), // QEMU esp32 icount shift max = 10
       "-chardev", `socket,id=espsock,host=127.0.0.1,port=${port},server=off`,
       "-netdev", "user,id=net0",
       "-device", `espplay.bridge,chardev=espsock,netdev=net0,cave-addr=${CAVE[machine]}` +
@@ -103,6 +103,8 @@ export class QemuSession extends EventEmitter {
     return new Promise((res, rej) => {
       this.bridge = createServer((sock) => {
         this.socket = sock;
+        for (const f of this.pending) sock.write(f);
+        this.pending = [];
         sock.on("data", (chunk) => {
           for (const m of this.parser.push(chunk)) this.dispatch(m);
         });
@@ -120,10 +122,16 @@ export class QemuSession extends EventEmitter {
     this.emit("bridge", m);
   }
 
-  /** Send a backend→QEMU command frame. */
+  /** Send a backend→QEMU command frame (queued until the bridge connects). */
+  private pending: Buffer[] = [];
+
   send(type: number, payload: Buffer = Buffer.alloc(0)) {
+    const f = frame(type, payload);
     if (this.socket && !this.socket.destroyed) {
-      this.socket.write(frame(type, payload));
+      this.socket.write(f);
+    } else {
+      this.pending.push(f);
+      if (this.pending.length > 256) this.pending.shift();
     }
   }
 

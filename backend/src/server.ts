@@ -11,8 +11,16 @@ import { WifiSim } from "./wifi.js";
 import { BleController } from "./ble.js";
 import { MSG, frame } from "./protocol.js";
 
-const __dirname = fileURLToPath(new URL(".", import.meta.url));
-const ROOT = resolve(__dirname, "..", ".."); // repo root when running from backend/dist
+const MOD_DIR = (() => {
+  try {
+    return fileURLToPath(new URL(".", import.meta.url));
+  } catch {
+    // CJS fallback: derive the module directory from the entry point path
+    const entry = process.argv[1] ?? ".";
+    return entry.replace(/[/\\][^/\\]+$/, "") || ".";
+  }
+})();
+const ROOT = resolve(MOD_DIR, "..", ".."); // repo root when running from backend/dist
 const DATA = join(ROOT, "work", "sessions");
 mkdirSync(DATA, { recursive: true });
 
@@ -112,7 +120,7 @@ function bundle(session: QemuSession): SessionBundle {
       }
       case MSG.DISPLAY_FB: {
         const key = `${m.payload[0]}-${m.payload[1]}`;
-        b.displays[key] = m.payload.subarray(2).toString("base64");
+        b.displays[key] = m.payload.subarray(4).toString("base64"); // [bus,addr,page,col] + 1024B fb
         broadcast(session.id, { kind: "display", bus: m.payload[0], addr: m.payload[1], fb: b.displays[key] });
         break;
       }
@@ -196,7 +204,7 @@ wss.on("connection", (ws, req) => {
         }
         case "i2cAttach": {
           const p = Buffer.alloc(3);
-          p[0] = msg.kind ?? 0; p[1] = msg.bus ?? 0; p[2] = msg.addr ?? 0;
+          p[0] = msg.dev ?? 0; p[1] = msg.bus ?? 0; p[2] = msg.addr ?? 0;
           b.session.send(MSG.I2CDEV_ATTACH, p);
           break;
         }

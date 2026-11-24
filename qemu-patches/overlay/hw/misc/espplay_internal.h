@@ -53,6 +53,8 @@ void espplay_wifi_config_updated(EspplayBridgeState *s);
 void espplay_wifi_connect_result(int ok, int8_t rssi, int channel,
                                  const uint8_t *bssid, int authmode);
 void espplay_wifi_sim_event(int type, int reason);
+void espplay_wifi_bridge_event(int ev, int reason);
+void espplay_wifi_ev_pump(void);
 void espplay_hci_down(const uint8_t *data, int len);
 void espplay_send_display_frame(const uint8_t *meta, const uint8_t *fb, int len);
 void espplay_send_lcd_frame(const uint8_t *meta, const uint8_t *lines, int len);

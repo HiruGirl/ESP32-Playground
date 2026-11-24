@@ -240,6 +240,11 @@ static void espplay_handle_cmd(EspplayBridgeState *s, uint8_t type,
                                         len >= 10 ? p[9] : 0);
         }
         break;
+    case ESPPLAY_MSG_WIFI_EVENT:
+        if (len >= 1) {
+            espplay_wifi_bridge_event(p[0], len >= 2 ? p[1] : 0);
+        }
+        break;
     case ESPPLAY_CMD_WIFI_SIM:
         if (len >= 2) {
             espplay_wifi_sim_event(p[0], p[1]);

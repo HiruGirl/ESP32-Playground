@@ -183,6 +183,13 @@ static uint32_t espplay_cave_addr;
 
 static struct {
     bool active;
+    bool pending;           /* setup scheduled, frame not yet committed */
+    bool queued;            /* one follow-up request staged while busy */
+    uint32_t q_func;
+    uint32_t q_args[6];
+    int q_nargs;
+    void (*q_done)(uint32_t, uint32_t, void *);
+    void *q_ctx;
     uint32_t func;
     uint32_t args[6];
     int nargs;
@@ -234,8 +241,13 @@ static void espplay_setup_frame(CPUState *cpu)
     for (int i = 0; i < 6; i++) {
         env->regs[10 + i] = i < qcall.nargs ? qcall.args[i] : 0;
     }
-    env->sregs[PS] = (env->sregs[PS] & ~(3u << 12)) | (2u << 12); /* CALLINC */
-    env->sregs[PS] = (env->sregs[PS] & ~0xFu) | 15u;              /* INTLEVEL */
+    /* PS_CALLINC lives in bits 16-17 (0x30000); the OWB field is 8-11. */
+    env->sregs[PS] = (env->sregs[PS] & ~0x30000u) | 0x20000u; /* CALLINC=2 */
+    env->sregs[PS] = (env->sregs[PS] & ~0xFu) | 15u;          /* INTLEVEL */
+    /* Single-base-bit windowstart for the committed base: guarantees the
+     * callee ENTRY rotation lands on a legal window. */
+    env->sregs[WINDOW_START] =
+        1u << (env->sregs[WINDOW_BASE] & (env->config->nareg / 4 - 1));
     env->windowbase_next = env->sregs[WINDOW_BASE];
     env->pc = qcall.func;
 #elif defined(CONFIG_TARGET_RISCV32)
@@ -284,10 +296,33 @@ static void espplay_finish_qcall(CPUState *cpu)
     if (done) {
         done(r0, r1, ctx);
     }
+    /* Promote a follow-up request staged while we were busy (re-requests
+     * from done() above start fresh; they never collide with this one). */
+    if (qcall.queued) {
+        qcall.queued = false;
+        qcall.func = qcall.q_func;
+        qcall.nargs = qcall.q_nargs;
+        memcpy(qcall.args, qcall.q_args, sizeof(qcall.args));
+        qcall.done = qcall.q_done;
+        qcall.ctx = qcall.q_ctx;
+        qcall.pending = true;
+        async_run_on_cpu(espplay_qcall_cpu, espplay_qcall_setup_on_cpu,
+                         RUN_ON_CPU_NULL);
+    }
+    /* Anything queued during the call may be waiting on qcall_active. */
+    espplay_wifi_ev_pump();
 }
 
 void espplay_qcall_setup_on_cpu(CPUState *cpu, run_on_cpu_data data)
 {
+    /* Exactly one setup per request: a stale async_run_on_cpu delivery (or
+     * a second request racing in) must not re-commit the frame while the
+     * injected call is in flight. */
+    if (!qcall.pending || qcall.active) {
+        cpu_loop_exit(cpu);
+        return;
+    }
+    qcall.pending = false;
     espplay_setup_frame(cpu);
     cpu_loop_exit(cpu);
 }
@@ -301,11 +336,22 @@ void espplay_qcall_request(uint32_t func, const uint32_t *args, int nargs,
         }
         return;
     }
-    if (qcall.active) {
-        espplay_log("qcall busy, dropping request to 0x%x", func);
-        if (done) {
-            done(0, 0, ctx);
+    if (qcall.active || qcall.pending) {
+        if (qcall.queued) {
+            espplay_log("qcall busy, dropping request to 0x%x", func);
+            if (done) {
+                done(0, 0, ctx);
+            }
+            return;
         }
+        qcall.queued = true;
+        qcall.q_func = func;
+        qcall.q_nargs = nargs > 6 ? 6 : nargs;
+        for (int i = 0; i < qcall.q_nargs; i++) {
+            qcall.q_args[i] = args[i];
+        }
+        qcall.q_done = done;
+        qcall.q_ctx = ctx;
         return;
     }
     qcall.func = func;
@@ -315,6 +361,7 @@ void espplay_qcall_request(uint32_t func, const uint32_t *args, int nargs,
     }
     qcall.done = done;
     qcall.ctx = ctx;
+    qcall.pending = true;
     async_run_on_cpu(espplay_qcall_cpu, espplay_qcall_setup_on_cpu,
                      RUN_ON_CPU_NULL);
 }

@@ -215,6 +215,8 @@ bool espplay_qcall_active(void)
     return qcall.active;
 }
 
+void espplay_qcall_setup_on_cpu(CPUState *cpu, run_on_cpu_data data);
+
 static void espplay_setup_frame(CPUState *cpu)
 {
 #if defined(CONFIG_TARGET_XTENSA)

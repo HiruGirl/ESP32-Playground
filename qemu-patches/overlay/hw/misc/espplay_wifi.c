@@ -25,6 +25,8 @@
 #define WIFI_EVENT_STA_STOP       3
 #define WIFI_EVENT_STA_CONNECTED  4
 #define WIFI_EVENT_STA_DISCONNECTED 5
+#define WIFI_EVENT_AP_START       6
+#define WIFI_EVENT_AP_STOP        7
 #define WIFI_EVENT_SCAN_DONE      8
 
 #define ESP_OK 0

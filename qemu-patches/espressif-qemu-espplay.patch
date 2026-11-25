@@ -13,6 +13,44 @@ index 8163295f34..78bc614635 100644
      if (!cpu->watchpoint_hit) {
          QTAILQ_FOREACH(wp, &cpu->watchpoints, entry) {
              wp->flags &= ~BP_WATCHPOINT_HIT;
+diff --git a/gdbstub/gdbstub.c b/gdbstub/gdbstub.c
+index b1def7e71d..d4cfe00eca 100644
+--- a/gdbstub/gdbstub.c
++++ b/gdbstub/gdbstub.c
+@@ -206,6 +206,10 @@ static uint32_t gdb_get_cpu_pid(CPUState *cpu)
+ #else
+     if (cpu->cluster_index == UNASSIGNED_CLUSTER_INDEX) {
+         /* Return the default process' PID */
++        if (gdbserver_state.process_num == 0) {
++            /* No gdbstub process registered (debugger never attached). */
++            return 0;
++        }
+         int index = gdbserver_state.process_num - 1;
+         return gdbserver_state.processes[index].pid;
+     }
+@@ -236,6 +240,13 @@ static GDBProcess *gdb_get_cpu_process(CPUState *cpu)
+     return gdb_get_process(gdb_get_cpu_pid(cpu));
+ }
+ 
++/* ESP32 Playground: true only when a gdbstub session may consume stops. */
++bool gdbstub_cpu_attached(CPUState *cpu)
++{
++    GDBProcess *p = gdb_get_cpu_process(cpu);
++    return p && p->attached;
++}
++
+ static CPUState *find_cpu(uint32_t thread_id)
+ {
+     CPUState *cpu;
+@@ -2287,7 +2298,7 @@ void gdb_set_stop_cpu(CPUState *cpu)
+ {
+     GDBProcess *p = gdb_get_cpu_process(cpu);
+ 
+-    if (!p->attached) {
++    if (!p || !p->attached) {
+         /*
+          * Having a stop CPU corresponding to a process that is not attached
+          * confuses GDB. So we ignore the request.
 diff --git a/hw/char/esp32_uart.c b/hw/char/esp32_uart.c
 index 103cd025af..9b76ca57af 100644
 --- a/hw/char/esp32_uart.c
@@ -159,6 +197,140 @@ index 5e25782bea..f516848a63 100644
      memory_region_init_io(&s->iomem, obj, &gpio_ops, s,
                            TYPE_ESP32_GPIO, 0x1000);
      sysbus_init_mmio(sbd, &s->iomem);
+diff --git a/hw/i2c/esp32_i2c.c b/hw/i2c/esp32_i2c.c
+index 5f4022f0b1..86b85ade98 100644
+--- a/hw/i2c/esp32_i2c.c
++++ b/hw/i2c/esp32_i2c.c
+@@ -4,6 +4,40 @@
+ #include "qemu/error-report.h"
+ #include "hw/i2c/esp32_i2c.h"
+ #include "hw/irq.h"
++#include "hw/misc/espplay_internal.h"
++#include "qom/object.h"
++
++/* espplay slave dispatch: when an espplay device model (virtual sensor,
++ * display, ...) owns the target address, route the transfer to it instead
++ * of the generic i2c bus. Writes are batched for the whole write phase so
++ * models see the complete buffer (control byte + payload); reads are
++ * served in one call per read command. */
++static int esp_cur_addr = -1;
++static bool esp_cur_active;
++static uint8_t esp_wbuf[512];
++static int esp_wlen;
++
++static void esp_flush_wbuf(Esp32I2CState *s)
++{
++    if (esp_cur_active && esp_wlen > 0) {
++        espplay_i2c_slave_write(s->bus_nr, esp_cur_addr, esp_wbuf, esp_wlen);
++    }
++    esp_wlen = 0;
++}
++
++static bool esp_try_start(Esp32I2CState *s, uint8_t addr, bool is_read)
++{
++    esp_flush_wbuf(s);
++    esp_cur_active = false;
++    esp_cur_addr = -1;
++    if (espplay_i2c_slave_exists(s->bus_nr, addr)) {
++        esp_cur_active = true;
++        esp_cur_addr = addr;
++        esp_wlen = 0;
++        return true;
++    }
++    return false;
++}
+ 
+ static void esp32_i2c_do_transaction(Esp32I2CState * s);
+ static void esp32_i2c_update_irq(Esp32I2CState * s);
+@@ -180,7 +214,12 @@ static void esp32_i2c_do_transaction(Esp32I2CState * s)
+         char opcode = FIELD_EX32(cmd, I2C_CMD, OPCODE);
+         switch (opcode) {
+             case I2C_OPCODE_RSTART:
+-                i2c_end_transfer(s->bus);
++                esp_flush_wbuf(s);
++                if (!esp_cur_active) {
++                    i2c_end_transfer(s->bus);
++                }
++                esp_cur_active = false;
++                esp_cur_addr = -1;
+                 s->trans_ongoing = false;
+                 break;
+             case I2C_OPCODE_WRITE: {
+@@ -190,7 +229,9 @@ static void esp32_i2c_do_transaction(Esp32I2CState * s)
+                     uint8_t data = fifo8_pop(&s->tx_fifo);
+                     uint8_t addr = data >> 1;
+                     uint8_t is_read = data & 0x1;
+-                    if (i2c_start_transfer(s->bus, addr, is_read) != 0) {
++                    int start_err = esp_try_start(s, addr, is_read) ? 0
++                                    : i2c_start_transfer(s->bus, addr, is_read);
++                    if (start_err != 0) {
+                         /* NACK */
+                         if (FIELD_EX32(cmd, I2C_CMD, ACK_CHECK_EN)
+                             && FIELD_EX32(cmd, I2C_CMD, ACK_EXP) == 0) {
+@@ -205,24 +246,42 @@ static void esp32_i2c_do_transaction(Esp32I2CState * s)
+                 }
+                 for (size_t nbytes = 0; nbytes < length; ++nbytes) {
+                     uint8_t data = fifo8_pop(&s->tx_fifo);
+-                    i2c_send(s->bus, data);
++                    if (esp_cur_active) {
++                        if (esp_wlen < (int)sizeof(esp_wbuf)) {
++                            esp_wbuf[esp_wlen++] = data;
++                        }
++                    } else {
++                        i2c_send(s->bus, data);
++                    }
+                 }
+                 break;
+             }
+             case I2C_OPCODE_READ: {
+                 size_t length = FIELD_EX32(cmd, I2C_CMD, BYTE_NUM);
++                esp_flush_wbuf(s);
+                 for (size_t nbytes = 0; nbytes < length; ++nbytes) {
+                     if (fifo8_num_free(&s->rx_fifo) == 0) {
+                         error_report("esp32_i2c: RX FIFO overflow");
+                     } else {
+-                        uint8_t data = i2c_recv(s->bus);
++                        uint8_t data;
++                        if (esp_cur_active) {
++                            espplay_i2c_slave_read(s->bus_nr, esp_cur_addr,
++                                                  &data, 1);
++                        } else {
++                            data = i2c_recv(s->bus);
++                        }
+                         fifo8_push(&s->rx_fifo, data);
+                     }
+                 }
+                 break;
+             }
+             case I2C_OPCODE_STOP:
+-                i2c_end_transfer(s->bus);
++                esp_flush_wbuf(s);
++                if (!esp_cur_active) {
++                    i2c_end_transfer(s->bus);
++                }
++                esp_cur_active = false;
++                esp_cur_addr = -1;
+                 s->trans_ongoing = false;
+                 s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, TRANS_COMPLETE, 1);
+                 stop_or_end = true;
+@@ -256,6 +315,17 @@ static void esp32_i2c_init(Object * obj)
+     sysbus_init_irq(sbd, &s->irq);
+ 
+     s->bus = i2c_init_bus(DEVICE(s), "i2c");
++    s->bus_nr = 0;
++    const char *comp = object_get_canonical_path_component(OBJECT(s));
++    if (comp && comp[0] == 'i') {
++        const char *d = comp;
++        while (*d && !g_ascii_isdigit(*d)) {
++            d++;
++        }
++        if (*d) {
++            s->bus_nr = atoi(d);
++        }
++    }
+ 
+     fifo8_create(&s->tx_fifo, ESP32_I2C_FIFO_LENGTH);
+     fifo8_create(&s->rx_fifo, ESP32_I2C_FIFO_LENGTH);
 diff --git a/hw/misc/esp32_ledc.c b/hw/misc/esp32_ledc.c
 index 9cebea9821..643a9cf0f4 100644
 --- a/hw/misc/esp32_ledc.c
@@ -356,6 +528,30 @@ index 5a60acff89..780fee4c1d 100644
      mc->desc = "Espressif ESP32S3 machine";
      mc->init = esp32s3_machine_init;
      mc->max_cpus = 2;
+diff --git a/include/exec/gdbstub.h b/include/exec/gdbstub.h
+index d73f424f56..eba6fe36a7 100644
+--- a/include/exec/gdbstub.h
++++ b/include/exec/gdbstub.h
+@@ -137,6 +137,7 @@ typedef struct {
+ GArray *gdb_get_register_list(CPUState *cpu);
+ 
+ void gdb_set_stop_cpu(CPUState *cpu);
++bool gdbstub_cpu_attached(CPUState *cpu);
+ 
+ /* in gdbstub-xml.c, generated by scripts/feature_to_c.py */
+ extern const GDBFeature gdb_static_features[];
+diff --git a/include/hw/i2c/esp32_i2c.h b/include/hw/i2c/esp32_i2c.h
+index b17dc75c8d..5816693e3c 100644
+--- a/include/hw/i2c/esp32_i2c.h
++++ b/include/hw/i2c/esp32_i2c.h
+@@ -21,6 +21,7 @@ typedef struct Esp32I2CState {
+     MemoryRegion iomem;
+     qemu_irq irq;
+     I2CBus *bus;
++    int bus_nr; /* espplay: controller index (i2c0=0, i2c1=1) */
+     Fifo8 rx_fifo;
+     Fifo8 tx_fifo;
+     bool trans_ongoing;
 diff --git a/subprojects/slirp.wrap b/subprojects/slirp.wrap
 index f367c01da1..bdcc16aa7a 100644
 --- a/subprojects/slirp.wrap
@@ -369,3 +565,23 @@ index f367c01da1..bdcc16aa7a 100644
  
  [provide]
  slirp = libslirp_libdep
+diff --git a/system/cpus.c b/system/cpus.c
+index 1c818ff682..318c64fcb8 100644
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -343,11 +343,14 @@ void cpu_handle_guest_debug(CPUState *cpu)
+         } else {
+             cpu_single_step(cpu, 0);
+         }
+-    } else {
++    } else if (gdbstub_cpu_attached(cpu)) {
+         gdb_set_stop_cpu(cpu);
+         qemu_system_debug_request();
+         cpu->stopped = true;
+     }
++    /* ESP32 Playground: with no debugger attached (firmware-hook
++     * breakpoints, transient CPU states), resume execution instead of
++     * stopping the VM or dereferencing empty gdbstub state. */
+ }
+ 
+ #ifdef CONFIG_LINUX

@@ -15,9 +15,9 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/misc/espplay_internal.h"
-#if defined(CONFIG_TARGET_XTENSA)
+#if defined(TARGET_XTENSA)
 #include "target/xtensa/cpu.h"
-#elif defined(CONFIG_TARGET_RISCV32)
+#elif defined(TARGET_RISCV)
 #include "target/riscv/cpu.h"
 #endif
 
@@ -25,6 +25,8 @@
 #define WIFI_EVENT_STA_STOP       3
 #define WIFI_EVENT_STA_CONNECTED  4
 #define WIFI_EVENT_STA_DISCONNECTED 5
+#define WIFI_EVENT_AP_START       6
+#define WIFI_EVENT_AP_STOP        7
 #define WIFI_EVENT_SCAN_DONE      8
 
 #define ESP_OK 0
@@ -71,26 +73,84 @@ static void wifi_mem_read(CPUState *cpu, uint32_t addr, void *buf, int len)
 }
 
 /* -------------------------------------------------------- event posting */
+/*
+ * Events are queued and delivered one at a time through esp_event_post via
+ * the qcall machinery. The payload (if any) is written just below the live
+ * stack pointer and passed by reference, exactly like the real event loop.
+ */
 
 typedef struct {
     uint32_t base;
     int32_t id;
+    uint8_t data[64];
+    uint32_t dlen;
+    uint32_t gptr;
     int remaining;
 } EvPost;
+
+static GQueue ev_q = G_QUEUE_INIT;
+static bool ev_inflight;
+
+static uint32_t wifi_get_sp(CPUState *cpu)
+{
+#if defined(TARGET_XTENSA)
+    return ((CPUXtensaState *)cpu_env(cpu))->regs[1];
+#elif defined(TARGET_RISCV)
+    return ((CPURISCVState *)cpu_env(cpu))->gpr[2];
+#else
+    return 0;
+#endif
+}
+
+static void ev_pump(CPUState *cpu);
 
 static void ev_post_done(uint32_t r0, uint32_t r1, void *ctx)
 {
     EvPost *ev = ctx;
     if (ev->remaining > 0 && W.p_event_post) {
-        uint32_t args[5] = { ev->base, (uint32_t)ev->id, 0, 0, 0 };
+        uint32_t args[5] = { ev->base, (uint32_t)ev->id,
+                             ev->dlen ? ev->gptr : 0, ev->dlen, 0 };
         ev->remaining--;
         espplay_qcall_request(W.p_event_post, args, 5, ev_post_done, ev);
-    } else {
-        g_free(ev);
+        return;
     }
+    g_free(ev);
+    ev_inflight = false;
+    ev_pump(qemu_get_cpu(0));
 }
 
-static void wifi_post_event(uint32_t base, int32_t id)
+static void ev_pump(CPUState *cpu)
+{
+    if (ev_inflight || espplay_qcall_active() || !W.p_event_post ||
+        g_queue_is_empty(&ev_q)) {
+        return;
+    }
+    if (!cpu) {
+        cpu = qemu_get_cpu(0);
+        if (!cpu) {
+            return;
+        }
+    }
+    EvPost *ev = g_queue_pop_head(&ev_q);
+    if (ev->dlen) {
+        uint32_t sp = wifi_get_sp(cpu);
+        ev->gptr = (sp - ev->dlen - 64) & ~3u;
+        wifi_mem_write(cpu, ev->gptr, ev->data, ev->dlen);
+    }
+    ev_inflight = true;
+    ev->remaining = 1;
+    uint32_t args[5] = { ev->base, (uint32_t)ev->id,
+                         ev->dlen ? ev->gptr : 0, ev->dlen, 0 };
+    espplay_qcall_request(W.p_event_post, args, 5, ev_post_done, ev);
+}
+
+void espplay_wifi_ev_pump(void)
+{
+    ev_pump(qemu_get_cpu(0));
+}
+
+static void wifi_post_event_ex(uint32_t base, int32_t id,
+                               const void *data, uint32_t dlen)
 {
     if (!W.p_event_post || !base) {
         return;
@@ -98,8 +158,67 @@ static void wifi_post_event(uint32_t base, int32_t id)
     EvPost *ev = g_malloc0(sizeof(*ev));
     ev->base = base;
     ev->id = id;
-    ev->remaining = 1;
-    ev_post_done(0, 0, ev);
+    if (data && dlen && dlen <= sizeof(ev->data)) {
+        memcpy(ev->data, data, dlen);
+        ev->dlen = dlen;
+    }
+    g_queue_push_tail(&ev_q, ev);
+    ev_pump(qemu_get_cpu(0));
+}
+
+static void wifi_post_event(uint32_t base, int32_t id)
+{
+    wifi_post_event_ex(base, id, NULL, 0);
+}
+
+/* ip_event_got_ip_t (IDF 4.4): ip_info{ip,netmask,gw}, esp_netif*, changed */
+static void wifi_post_got_ip(void)
+{
+    uint8_t payload[20] = { 0 };
+    /* The backend only reports GOT_IP once the STA lease exists, so the
+     * payload always carries the user-net address (10.0.2.15/24, gw .2). */
+    uint32_t ip = 0x0F02000A;    /* 10.0.2.15      */
+    uint32_t mask = 0x00FFFFFF;  /* 255.255.255.0  */
+    uint32_t gw = 0x0202000A;    /* 10.0.2.2       */
+    memcpy(payload + 0, &ip, 4);
+    memcpy(payload + 4, &mask, 4);
+    memcpy(payload + 8, &gw, 4);
+    payload[16] = 1; /* ip_changed */
+    wifi_post_event_ex(W.ev_base_ip, 0 /* IP_EVENT_STA_GOT_IP */,
+                       payload, sizeof(payload));
+}
+
+/* Bridge WIFI_EVENT (0x0d): u8 event, u8 reason (backend WIFI_EVENTS ids). */
+void espplay_wifi_bridge_event(int ev, int reason)
+{
+    switch (ev) {
+    case 2: /* STA_START */
+        wifi_post_event(W.ev_base_wifi, WIFI_EVENT_STA_START);
+        break;
+    case 3: /* STA_STOP */
+        wifi_post_event(W.ev_base_wifi, WIFI_EVENT_STA_STOP);
+        break;
+    case 4: /* STA_CONNECTED */
+        wifi_post_event(W.ev_base_wifi, WIFI_EVENT_STA_CONNECTED);
+        break;
+    case 5: /* STA_DISCONNECTED */
+        wifi_post_event(W.ev_base_wifi, WIFI_EVENT_STA_DISCONNECTED);
+        break;
+    case 6: /* AP_START */
+        wifi_post_event(W.ev_base_wifi, WIFI_EVENT_AP_START);
+        break;
+    case 7: /* AP_STOP */
+        wifi_post_event(W.ev_base_wifi, WIFI_EVENT_AP_STOP);
+        break;
+    case 8: /* SCAN_DONE */
+        wifi_post_event(W.ev_base_wifi, WIFI_EVENT_SCAN_DONE);
+        break;
+    case 9: /* GOT_IP */
+        wifi_post_got_ip();
+        break;
+    default:
+        break;
+    }
 }
 
 /* ------------------------------------------------------- config (JSON) */
@@ -199,6 +318,7 @@ void espplay_wifi_connect_result(int ok, int8_t rssi, int channel,
             memcpy(W.bssid, bssid, 6);
         }
         wifi_post_event(W.ev_base_wifi, WIFI_EVENT_STA_CONNECTED);
+        wifi_post_got_ip();
     } else {
         W.connected = false;
         W.connecting = false;

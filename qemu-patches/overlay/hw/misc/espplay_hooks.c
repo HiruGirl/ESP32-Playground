@@ -18,9 +18,9 @@
 #include "exec/breakpoint.h"
 #include "sysemu/runstate.h"
 
-#if defined(CONFIG_TARGET_XTENSA)
+#if defined(TARGET_XTENSA)
 #include "target/xtensa/cpu.h"
-#elif defined(CONFIG_TARGET_RISCV32)
+#elif defined(TARGET_RISCV)
 #include "target/riscv/cpu.h"
 #include "target/riscv/cpu_bits.h"
 #endif
@@ -126,8 +126,8 @@ bool espplay_sym_lookup(const char *name, uint32_t *addr)
 
 uint32_t espplay_get_pc(CPUState *cpu)
 {
-#if defined(CONFIG_TARGET_XTENSA) || defined(CONFIG_TARGET_RISCV32)
-    return ((CPUArchState *)cpu->env_ptr)->pc;
+#if defined(TARGET_XTENSA) || defined(TARGET_RISCV)
+    return ((CPUArchState *)cpu_env(cpu))->pc;
 #else
     return 0;
 #endif
@@ -135,17 +135,17 @@ uint32_t espplay_get_pc(CPUState *cpu)
 
 void espplay_set_pc(CPUState *cpu, uint32_t pc)
 {
-#if defined(CONFIG_TARGET_XTENSA) || defined(CONFIG_TARGET_RISCV32)
-    ((CPUArchState *)cpu->env_ptr)->pc = pc;
+#if defined(TARGET_XTENSA) || defined(TARGET_RISCV)
+    ((CPUArchState *)cpu_env(cpu))->pc = pc;
 #endif
 }
 
 uint32_t espplay_get_arg(CPUState *cpu, int idx)
 {
-#if defined(CONFIG_TARGET_XTENSA)
-    return ((CPUXtensaState *)cpu->env_ptr)->regs[10 + idx];
-#elif defined(CONFIG_TARGET_RISCV32)
-    return ((CPURISCVState *)cpu->env_ptr)->gpr[10 + idx];
+#if defined(TARGET_XTENSA)
+    return ((CPUXtensaState *)cpu_env(cpu))->regs[10 + idx];
+#elif defined(TARGET_RISCV)
+    return ((CPURISCVState *)cpu_env(cpu))->gpr[10 + idx];
 #else
     return 0;
 #endif
@@ -153,11 +153,15 @@ uint32_t espplay_get_arg(CPUState *cpu, int idx)
 
 uint32_t espplay_get_ra(CPUState *cpu)
 {
-#if defined(CONFIG_TARGET_XTENSA)
-    uint32_t a0 = ((CPUXtensaState *)cpu->env_ptr)->regs[0];
-    return a0 & 0x3FFFFFFFu;
-#elif defined(CONFIG_TARGET_RISCV32)
-    return ((CPURISCVState *)cpu->env_ptr)->gpr[1];
+#if defined(TARGET_XTENSA)
+    CPUXtensaState *env = cpu_env(cpu);
+    uint32_t callinc = (env->sregs[PS] & PS_CALLINC) >> PS_CALLINC_SHIFT;
+    /* call8 writes RA to regs[callinc<<2] as {callinc[1:0], ra[29:0]};
+     * restore the top two address bits from the current PC (qcall ABI). */
+    uint32_t ra = env->regs[(callinc << 2) & 15];
+    return (env->pc & 0xC0000000u) | (ra & 0x3FFFFFFFu);
+#elif defined(TARGET_RISCV)
+    return ((CPURISCVState *)cpu_env(cpu))->gpr[1];
 #else
     return 0;
 #endif
@@ -165,12 +169,12 @@ uint32_t espplay_get_ra(CPUState *cpu)
 
 void espplay_set_ret(CPUState *cpu, uint32_t v0, uint32_t v1)
 {
-#if defined(CONFIG_TARGET_XTENSA)
-    CPUXtensaState *env = cpu->env_ptr;
+#if defined(TARGET_XTENSA)
+    CPUXtensaState *env = cpu_env(cpu);
     env->regs[10] = v0;
     env->regs[11] = v1;
-#elif defined(CONFIG_TARGET_RISCV32)
-    CPURISCVState *env = cpu->env_ptr;
+#elif defined(TARGET_RISCV)
+    CPURISCVState *env = cpu_env(cpu);
     env->gpr[10] = v0;
     env->gpr[11] = v1;
 #endif
@@ -183,12 +187,19 @@ static uint32_t espplay_cave_addr;
 
 static struct {
     bool active;
+    bool pending;           /* setup scheduled, frame not yet committed */
+    bool queued;            /* one follow-up request staged while busy */
+    uint32_t q_func;
+    uint32_t q_args[6];
+    int q_nargs;
+    void (*q_done)(uint32_t, uint32_t, void *);
+    void *q_ctx;
     uint32_t func;
     uint32_t args[6];
     int nargs;
     void (*done)(uint32_t, uint32_t, void *);
     void *ctx;
-#if defined(CONFIG_TARGET_XTENSA)
+#if defined(TARGET_XTENSA)
     uint32_t pc;
     uint32_t regs[16];
     uint32_t phys_regs[256];
@@ -196,7 +207,7 @@ static struct {
     uint32_t window_start;
     uint32_t ps;
     uint32_t windowbase_next;
-#elif defined(CONFIG_TARGET_RISCV32)
+#elif defined(TARGET_RISCV)
     uint32_t pc;
     uint32_t gpr[32];
     uint64_t mstatus;
@@ -208,10 +219,12 @@ bool espplay_qcall_active(void)
     return qcall.active;
 }
 
+void espplay_qcall_setup_on_cpu(CPUState *cpu, run_on_cpu_data data);
+
 static void espplay_setup_frame(CPUState *cpu)
 {
-#if defined(CONFIG_TARGET_XTENSA)
-    CPUXtensaState *env = cpu->env_ptr;
+#if defined(TARGET_XTENSA)
+    CPUXtensaState *env = cpu_env(cpu);
     if (!qcall.active) {
         qcall.active = true;
         qcall.pc = env->pc;
@@ -234,12 +247,17 @@ static void espplay_setup_frame(CPUState *cpu)
     for (int i = 0; i < 6; i++) {
         env->regs[10 + i] = i < qcall.nargs ? qcall.args[i] : 0;
     }
-    env->sregs[PS] = (env->sregs[PS] & ~(3u << 12)) | (2u << 12); /* CALLINC */
-    env->sregs[PS] = (env->sregs[PS] & ~0xFu) | 15u;              /* INTLEVEL */
+    /* PS_CALLINC lives in bits 16-17 (0x30000); the OWB field is 8-11. */
+    env->sregs[PS] = (env->sregs[PS] & ~0x30000u) | 0x20000u; /* CALLINC=2 */
+    env->sregs[PS] = (env->sregs[PS] & ~0xFu) | 15u;          /* INTLEVEL */
+    /* Single-base-bit windowstart for the committed base: guarantees the
+     * callee ENTRY rotation lands on a legal window. */
+    env->sregs[WINDOW_START] =
+        1u << (env->sregs[WINDOW_BASE] & (env->config->nareg / 4 - 1));
     env->windowbase_next = env->sregs[WINDOW_BASE];
     env->pc = qcall.func;
-#elif defined(CONFIG_TARGET_RISCV32)
-    CPURISCVState *env = cpu->env_ptr;
+#elif defined(TARGET_RISCV)
+    CPURISCVState *env = cpu_env(cpu);
     if (!qcall.active) {
         qcall.active = true;
         qcall.pc = env->pc;
@@ -258,8 +276,8 @@ static void espplay_setup_frame(CPUState *cpu)
 static void espplay_finish_qcall(CPUState *cpu)
 {
     uint32_t r0 = 0, r1 = 0;
-#if defined(CONFIG_TARGET_XTENSA)
-    CPUXtensaState *env = cpu->env_ptr;
+#if defined(TARGET_XTENSA)
+    CPUXtensaState *env = cpu_env(cpu);
     r0 = env->regs[10];
     r1 = env->regs[11];
     env->pc = qcall.pc;
@@ -269,8 +287,8 @@ static void espplay_finish_qcall(CPUState *cpu)
     env->sregs[WINDOW_START] = qcall.window_start;
     env->sregs[PS] = qcall.ps;
     env->windowbase_next = qcall.windowbase_next;
-#elif defined(CONFIG_TARGET_RISCV32)
-    CPURISCVState *env = cpu->env_ptr;
+#elif defined(TARGET_RISCV)
+    CPURISCVState *env = cpu_env(cpu);
     r0 = env->gpr[10];
     r1 = env->gpr[11];
     env->pc = qcall.pc;
@@ -284,12 +302,36 @@ static void espplay_finish_qcall(CPUState *cpu)
     if (done) {
         done(r0, r1, ctx);
     }
+    /* Promote a follow-up request staged while we were busy (re-requests
+     * from done() above start fresh; they never collide with this one). */
+    if (qcall.queued) {
+        qcall.queued = false;
+        qcall.func = qcall.q_func;
+        qcall.nargs = qcall.q_nargs;
+        memcpy(qcall.args, qcall.q_args, sizeof(qcall.args));
+        qcall.done = qcall.q_done;
+        qcall.ctx = qcall.q_ctx;
+        qcall.pending = true;
+        async_run_on_cpu(espplay_qcall_cpu, espplay_qcall_setup_on_cpu,
+                         RUN_ON_CPU_NULL);
+    }
+    /* Anything queued during the call may be waiting on qcall_active. */
+    espplay_wifi_ev_pump();
 }
 
 void espplay_qcall_setup_on_cpu(CPUState *cpu, run_on_cpu_data data)
 {
+    /* Exactly one setup per request: a stale async_run_on_cpu delivery (or
+     * a second request racing in) must not re-commit the frame while the
+     * injected call is in flight. */
+    if (!qcall.pending || qcall.active) {
+        return;
+    }
+    qcall.pending = false;
     espplay_setup_frame(cpu);
-    cpu_loop_exit(cpu);
+    /* No cpu_loop_exit here: run_on_cpu work runs from rr_wait_io_event,
+     * outside cpu_exec's setjmp scope (stale jmp_env). The next cpu_exec
+     * picks the staged env->pc up naturally. */
 }
 
 void espplay_qcall_request(uint32_t func, const uint32_t *args, int nargs,
@@ -301,11 +343,22 @@ void espplay_qcall_request(uint32_t func, const uint32_t *args, int nargs,
         }
         return;
     }
-    if (qcall.active) {
-        espplay_log("qcall busy, dropping request to 0x%x", func);
-        if (done) {
-            done(0, 0, ctx);
+    if (qcall.active || qcall.pending) {
+        if (qcall.queued) {
+            espplay_log("qcall busy, dropping request to 0x%x", func);
+            if (done) {
+                done(0, 0, ctx);
+            }
+            return;
         }
+        qcall.queued = true;
+        qcall.q_func = func;
+        qcall.q_nargs = nargs > 6 ? 6 : nargs;
+        for (int i = 0; i < qcall.q_nargs; i++) {
+            qcall.q_args[i] = args[i];
+        }
+        qcall.q_done = done;
+        qcall.q_ctx = ctx;
         return;
     }
     qcall.func = func;
@@ -315,6 +368,7 @@ void espplay_qcall_request(uint32_t func, const uint32_t *args, int nargs,
     }
     qcall.done = done;
     qcall.ctx = ctx;
+    qcall.pending = true;
     async_run_on_cpu(espplay_qcall_cpu, espplay_qcall_setup_on_cpu,
                      RUN_ON_CPU_NULL);
 }
@@ -338,6 +392,14 @@ bool espplay_debug_check(CPUState *cpu)
             bool handled = espplay_hooks[i].fn(cpu, pc, espplay_hooks[i].symbol);
             if (handled) {
                 uint32_t ra = espplay_get_ra(cpu);
+#if defined(TARGET_XTENSA)
+                CPUXtensaState *env = cpu_env(cpu);
+                /* Cancel the pending call-window rotation and clear
+                 * CALLINC: the callee never ran, so the caller continues
+                 * at its post-call8 PC with its own frame intact. */
+                env->windowbase_next = env->sregs[WINDOW_BASE];
+                env->sregs[PS] &= ~PS_CALLINC;
+#endif
                 espplay_set_pc(cpu, ra);
                 cpu_loop_exit(cpu);
                 return true;

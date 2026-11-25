@@ -12,6 +12,7 @@ export interface SessionConfig {
   firmware: string; // path to merged .bin
   elf?: string; // optional .elf for symbol hooks
   icount?: number;
+  touch?: { bus: number; csPin?: number; irqPin?: number };
   sdImage?: string; // optional CYD SPI SD image; copied per session
   flashSize?: string; // e.g. "2MB"
   tft?: { bus: number; dcPin?: number; w?: number; h?: number }; // virtual SPI LCD
@@ -85,6 +86,7 @@ export class QemuSession extends EventEmitter {
       "-chardev", `socket,id=espsock,host=127.0.0.1,port=${port},server=off`,
       "-netdev", "user,id=net0",
       "-device", `espplay.bridge,chardev=espsock,netdev=net0,cave-addr=${CAVE[machine]}` +
+        (this.cfg.touch ? `,touch-bus=${this.cfg.touch.bus},touch-cs-pin=${this.cfg.touch.csPin ?? 33},touch-irq-pin=${this.cfg.touch.irqPin ?? 36}` : "") +
         (this.cfg.elf ? `,elf=${resolve(this.cfg.elf)}` : "") +
         (this.cfg.tft
           ? `,tft-bus=${this.cfg.tft.bus}` +

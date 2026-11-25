@@ -62,6 +62,7 @@ void espplay_gpio_out_update(int pin, int level)
     uint8_t p[2] = { (uint8_t)pin, (uint8_t)(level ? 1 : 0) };
     espplay_send_msg(espplay_bridge_get(), ESPPLAY_MSG_GPIO_LEVEL, p, 2);
     espplay_tft_gpio_update(pin, level);
+    espplay_touch_gpio_update(pin, level);
     if (espplay_sd_cs && pin == espplay_sd_cs_pin) qemu_set_irq(espplay_sd_cs, level);
 }
 
@@ -278,6 +279,9 @@ static void espplay_handle_cmd(EspplayBridgeState *s, uint8_t type,
             }
         }
         break;
+    case ESPPLAY_CMD_TOUCH:
+        if (len >= 5) espplay_touch_input(s, p[0], p[1] | (p[2] << 8), p[3] | (p[4] << 8));
+        break;
     case ESPPLAY_CMD_STATE_RESET:
         s->gpio_input_mask = 0;
         s->adc_mask = 0;
@@ -349,6 +353,7 @@ static void espplay_realize(DeviceState *dev, Error **errp)
     espplay_singleton = s;
     espplay_hooks_init(s);
     espplay_tft_configure(s);
+    espplay_touch_configure(s);
     espplay_send_msg(s, ESPPLAY_MSG_HELLO, (const uint8_t[]){ 1, 0, 0, 0, s->chip_id }, 5);
 }
 
@@ -366,6 +371,9 @@ static Property espplay_properties[] = {
     DEFINE_PROP_UINT8("chip-id", EspplayBridgeState, chip_id, 0),
     DEFINE_PROP_STRING("elf", EspplayBridgeState, elf_path),
     DEFINE_PROP_UINT32("cave-addr", EspplayBridgeState, cave_addr, 0x400A0000),
+    DEFINE_PROP_INT32("touch-bus", EspplayBridgeState, touch_bus, -1),
+    DEFINE_PROP_INT32("touch-cs-pin", EspplayBridgeState, touch_cs_pin, 33),
+    DEFINE_PROP_INT32("touch-irq-pin", EspplayBridgeState, touch_irq_pin, 36),
     DEFINE_PROP_INT32("tft-bus", EspplayBridgeState, tft_bus, -1),
     DEFINE_PROP_INT32("tft-dc-pin", EspplayBridgeState, tft_dc_pin, 2),
     DEFINE_PROP_UINT32("tft-w", EspplayBridgeState, tft_w, 240),

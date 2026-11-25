@@ -33,7 +33,7 @@ Merged 4MB flash image (QEMU boots raw `if=mtd`), erased-flash fill 0xFF:
 | GPIO / DC pin tracking    | WORKS | 13k+ GPIO level events, DC-driven command/data classification |
 | WiFi / BLE / I2C / ADC / buttons / sensors | WORKS (e2e 4/4) | see docs/TESTING.md |
 | SD card (SPI)             | PARTIAL | CYD SPI3/GPIO5 card initializes and reads/writes a raw sector in an ESP-IDF guest; FAT and Marauder integration remain unverified. |
-| Touch (XPT2046)           | NOT MODELED | no input device model |
+| Touch (XPT2046)           | PARTIAL | Guest test reads raw coordinates, pipelined conversions and active-low IRQ level. GPIO edge interrupts and Marauder integration remain unverified. |
 | ESP32 SPI DMA | PARTIAL | Descriptor-driven TX demonstrated by `examples/tft_dma_test`; descriptor TX/RX chain unit tests pass. Not a complete DMA controller; RX is not yet tested with a guest peripheral. |
 | Marauder app startup      | HANGS | see below |
 
@@ -100,3 +100,14 @@ DMA with an SD card, and Marauder are not yet verified.
 `node tests/sd-spi.mjs` (with the backend running) creates a temporary 64 MiB
 image and verifies SD initialization, a sector read, a write and readback
 inside an ESP-IDF guest, as well as source-image isolation.
+
+## XPT2046 touch (experimental)
+
+Enable a CYD touch device with session option `touch: {bus: 3, csPin: 33,
+irqPin: 36}`. Send WebSocket messages `{"kind":"touch","down":true,
+"x":1234,"y":3456}` (raw 0–4095 ADC units), and a message with `down:false`
+to release. `node tests/touch-spi.mjs` exercises guest SPI coordinate and
+pipelined pressure reads, and the active-low IRQ *level*. Pressure readings
+are synthetic; GPIO interrupt delivery and real driver calibration have not
+yet been verified. SPI GPIO matrix routing is not modeled, so devices sharing
+a controller rely on correct software chip selects.

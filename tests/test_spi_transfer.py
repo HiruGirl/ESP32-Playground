@@ -17,6 +17,7 @@ end = text.index('\nstatic void esp32_spi_cs_set(', start)
 function = text[start:end]
 harness = r'''
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <assert.h>
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
@@ -25,6 +26,9 @@ static uint8_t sent[16];
 static int count;
 static void espplay_spi_slave_xfer(int bus, uint8_t byte) {
     assert(bus == 2); sent[count++] = byte;
+}
+static bool espplay_touch_xfer(int bus, uint8_t byte, uint8_t *out) {
+    (void)bus; (void)byte; (void)out; return false;
 }
 static uint32_t ssi_transfer(void *bus, uint8_t byte) {
     (void)bus; return byte ^ 0xa5;

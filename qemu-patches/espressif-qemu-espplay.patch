@@ -516,7 +516,7 @@ index f3a824cb23..17cd12be92 100644
      mc->default_cpu_type = TYPE_ESP_RISCV_CPU;
      mc->init = esp32c3_machine_init;
 diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
-index 65ca6663a0..dc37e25826 100644
+index 65ca6663a0..1f9583f465 100644
 --- a/hw/ssi/esp32_spi.c
 +++ b/hw/ssi/esp32_spi.c
 @@ -12,12 +12,15 @@
@@ -567,7 +567,7 @@ index 65ca6663a0..dc37e25826 100644
      case A_SPI_CMD:
          esp32_spi_do_command(s, value);
          break;
-@@ -158,11 +179,13 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
+@@ -158,11 +179,15 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
      uint8_t *c_buf = (uint8_t*) buf;
      for (int i = 0; i < bytes; ++i) {
          uint8_t byte = 0;
@@ -579,11 +579,13 @@ index 65ca6663a0..dc37e25826 100644
 +        espplay_spi_slave_xfer(s->bus_nr, byte);
          uint32_t res = ssi_transfer(s->spi, byte);
 -        if (byte < rx_bytes) {
++        uint8_t touch_rx;
++        if (espplay_touch_xfer(s->bus_nr, byte, &touch_rx)) res = touch_rx;
 +        if (i < rx_bytes) {
              memcpy(c_buf + i, &res, 1);
          }
      }
-@@ -170,13 +193,77 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
+@@ -170,13 +195,77 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
  
  static void esp32_spi_cs_set(Esp32SpiState *s, int value)
  {
@@ -661,7 +663,7 @@ index 65ca6663a0..dc37e25826 100644
      esp32_spi_cs_set(s, 0);
      esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
      esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
-@@ -185,6 +272,15 @@ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
+@@ -185,6 +274,15 @@ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
      }
      esp32_spi_txrx_buffer(s, t->data, t->data_tx_bytes, t->data_rx_bytes);
      esp32_spi_cs_set(s, 1);
@@ -677,7 +679,7 @@ index 65ca6663a0..dc37e25826 100644
  }
  
  /* Convert one of the hardware "bitlen" registers to a byte count */
-@@ -298,7 +394,10 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+@@ -298,7 +396,10 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
  
      case R_SPI_CMD_USR_MASK:
          maybe_encrypt_data(s);
@@ -689,7 +691,7 @@ index 65ca6663a0..dc37e25826 100644
              t.cmd = FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE);
              t.cmd_bytes = bitlen_to_bytes(FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN));
          } else {
-@@ -344,10 +443,26 @@ static void esp32_spi_reset_hold(Object *obj, ResetType type)
+@@ -344,10 +445,26 @@ static void esp32_spi_reset_hold(Object *obj, ResetType type)
      s->user2_reg = FIELD_DP32(0, SPI_USER2, COMMAND_BITLEN, 4);
      s->user2_reg = FIELD_DP32(s->user2_reg, SPI_USER2, COMMAND_VALUE, 0);
      s->status_reg = 0;
@@ -716,7 +718,7 @@ index 65ca6663a0..dc37e25826 100644
  }
  
  static void esp32_spi_init(Object *obj)
-@@ -355,6 +470,8 @@ static void esp32_spi_init(Object *obj)
+@@ -355,6 +472,8 @@ static void esp32_spi_init(Object *obj)
      Esp32SpiState *s = ESP32_SPI(obj);
      SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
  

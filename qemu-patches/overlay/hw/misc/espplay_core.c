@@ -788,3 +788,66 @@ void espplay_spi_slave_xfer(int bus, uint8_t byte)
         }
     }
 }
+
+/* Minimal XPT2046: 12-bit conversion data and active-low pen IRQ.  Commands
+ * are pipelined, as in XPT2046_Touchscreen's transfer16(0xC1) sequence. */
+typedef struct EspplayTouch {
+    bool enabled, selected, down;
+    int bus, cs_pin, irq_pin, pending;
+    uint16_t x, y, result;
+} EspplayTouch;
+static EspplayTouch touch;
+
+void espplay_touch_configure(EspplayBridgeState *s)
+{
+    memset(&touch, 0, sizeof(touch));
+    if (!s || s->touch_bus < 0 || s->touch_irq_pin < 0 || s->touch_irq_pin >= 40) return;
+    touch.enabled = true;
+    touch.bus = s->touch_bus;
+    touch.cs_pin = s->touch_cs_pin;
+    touch.irq_pin = s->touch_irq_pin;
+    espplay_touch_input(s, false, 0, 0);
+}
+
+void espplay_touch_gpio_update(int pin, int level)
+{
+    if (touch.enabled && pin == touch.cs_pin) {
+        touch.selected = !level;
+        if (level) touch.pending = 0;
+    }
+}
+
+void espplay_touch_input(EspplayBridgeState *s, bool down, uint16_t x, uint16_t y)
+{
+    if (!touch.enabled || !s) return;
+    touch.down = down;
+    touch.x = MIN(x, 4095);
+    touch.y = MIN(y, 4095);
+    uint64_t bit = UINT64_C(1) << touch.irq_pin;
+    s->gpio_input_mask |= bit;
+    if (down) s->gpio_input_val &= ~bit;
+    else s->gpio_input_val |= bit;
+    espplay_gpio_input_changed(s, touch.irq_pin);
+}
+
+bool espplay_touch_xfer(int bus, uint8_t tx, uint8_t *rx)
+{
+    if (!touch.enabled || !touch.selected || bus != touch.bus) return false;
+    uint8_t reply = 0;
+    if (touch.pending == 2) reply = touch.result >> 8;
+    else if (touch.pending == 1) reply = touch.result & 0xff;
+    if (touch.pending) touch.pending--;
+    if (tx & 0x80) {
+        uint16_t value = 0;
+        switch ((tx >> 4) & 7) {
+        case 1: value = touch.x; break;
+        case 5: value = touch.y; break;
+        case 3: value = touch.down ? 1500 : 0; break;    /* Z1 */
+        case 4: value = touch.down ? 2500 : 4095; break; /* Z2 */
+        }
+        touch.result = value << 3;
+        touch.pending = 2;
+    }
+    *rx = reply;
+    return true;
+}

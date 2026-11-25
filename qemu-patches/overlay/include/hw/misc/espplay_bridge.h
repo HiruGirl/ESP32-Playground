@@ -55,6 +55,7 @@ enum EspplayMsgType {
     ESPPLAY_CMD_HCI_DOWN        = 0x88, /* u16 n, packet */
     ESPPLAY_CMD_UART_INPUT      = 0x89, /* u8 uart, u16 n, bytes */
     ESPPLAY_CMD_STATE_RESET     = 0x8A,
+    ESPPLAY_CMD_TOUCH           = 0x8B, /* u8 pressed, u16 x, u16 y (raw 12-bit) */
 };
 
 /* Kinds for ESPPLAY_CMD_SENSOR_CFG */
@@ -111,6 +112,7 @@ typedef struct EspplayBridgeState {
     int32_t tft_dc_pin;
     uint32_t tft_w;
     uint32_t tft_h;
+    int32_t touch_bus, touch_cs_pin, touch_irq_pin;
 } EspplayBridgeState;
 
 /* Global accessor used by patched peripheral models. NULL when the bridge
@@ -136,6 +138,10 @@ void espplay_log(const char *fmt, ...);
 /* TFT (SPI LCD) model: config + dispatch hooks (called from esp32_spi.c and
  * from the GPIO out path for the DC pin level). */
 void espplay_tft_configure(EspplayBridgeState *s);
+void espplay_touch_configure(EspplayBridgeState *s);
+void espplay_touch_gpio_update(int pin, int level);
+void espplay_touch_input(EspplayBridgeState *s, bool down, uint16_t x, uint16_t y);
+bool espplay_touch_xfer(int bus, uint8_t tx, uint8_t *rx);
 void espplay_tft_gpio_update(int pin, int level);
 bool espplay_spi_slave_exists(int bus);
 void espplay_spi_slave_xfer(int bus, uint8_t byte);

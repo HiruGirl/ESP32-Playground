@@ -468,7 +468,7 @@ index f3a824cb23..17cd12be92 100644
      mc->default_cpu_type = TYPE_ESP_RISCV_CPU;
      mc->init = esp32c3_machine_init;
 diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
-index 65ca6663a0..aa69a323d8 100644
+index 65ca6663a0..decb6ea7cb 100644
 --- a/hw/ssi/esp32_spi.c
 +++ b/hw/ssi/esp32_spi.c
 @@ -18,6 +18,7 @@
@@ -479,15 +479,22 @@ index 65ca6663a0..aa69a323d8 100644
  #include "hw/ssi/esp32_spi.h"
  #include "hw/misc/esp32_flash_enc.h"
  
-@@ -161,6 +162,8 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
-         if (byte < tx_bytes) {
+@@ -158,11 +159,13 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
+     uint8_t *c_buf = (uint8_t*) buf;
+     for (int i = 0; i < bytes; ++i) {
+         uint8_t byte = 0;
+-        if (byte < tx_bytes) {
++        if (i < tx_bytes) {
              memcpy(&byte, c_buf + i, 1);
          }
 +        /* espplay: route TX bytes to the virtual SPI slave (TFT model) */
 +        espplay_spi_slave_xfer(s->bus_nr, byte);
          uint32_t res = ssi_transfer(s->spi, byte);
-         if (byte < rx_bytes) {
+-        if (byte < rx_bytes) {
++        if (i < rx_bytes) {
              memcpy(c_buf + i, &res, 1);
+         }
+     }
 @@ -170,6 +173,10 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
  
  static void esp32_spi_cs_set(Esp32SpiState *s, int value)

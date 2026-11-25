@@ -31,6 +31,7 @@ export const MSG = {
   HCI_DOWN: 0x88,
   UART_INPUT: 0x89,
   STATE_RESET: 0x8a,
+  TOUCH: 0x8b,
 } as const;
 
 export const WIFI_EVENTS = {

@@ -55,6 +55,7 @@ enum EspplayMsgType {
     ESPPLAY_CMD_HCI_DOWN        = 0x88, /* u16 n, packet */
     ESPPLAY_CMD_UART_INPUT      = 0x89, /* u8 uart, u16 n, bytes */
     ESPPLAY_CMD_STATE_RESET     = 0x8A,
+    ESPPLAY_CMD_TOUCH           = 0x8B, /* u8 pressed, u16 x, u16 y (raw 12-bit) */
 };
 
 /* Kinds for ESPPLAY_CMD_SENSOR_CFG */
@@ -83,8 +84,8 @@ typedef struct EspplayBridgeState {
     uint32_t rxbuf_cap;
 
     /* GPIO input drive from backend */
-    uint32_t gpio_input_val;
-    uint32_t gpio_input_mask;
+    uint64_t gpio_input_val;
+    uint64_t gpio_input_mask;
 
     /* ADC values injected by backend */
     uint16_t adc_value[32];
@@ -111,6 +112,7 @@ typedef struct EspplayBridgeState {
     int32_t tft_dc_pin;
     uint32_t tft_w;
     uint32_t tft_h;
+    int32_t touch_bus, touch_cs_pin, touch_irq_pin;
 } EspplayBridgeState;
 
 /* Global accessor used by patched peripheral models. NULL when the bridge
@@ -124,6 +126,8 @@ void espplay_send_msg(EspplayBridgeState *s, uint8_t type,
 /* Notifications from peripheral models into the bridge (safe to call with
  * no bridge present). */
 void espplay_gpio_out_update(int pin, int level);
+/* Optional GPIO-selected SPI SD card, attached by the ESP32 machine. */
+void espplay_sd_attach(qemu_irq cs, int pin);
 void espplay_gpio_mode_update(int pin, int mode, int pull);
 void espplay_ledc_update(int timer, uint32_t freq, int channel, uint32_t duty_permyriad);
 void espplay_rmt_frame(int channel, const uint8_t *bytes, size_t len);
@@ -134,14 +138,18 @@ void espplay_log(const char *fmt, ...);
 /* TFT (SPI LCD) model: config + dispatch hooks (called from esp32_spi.c and
  * from the GPIO out path for the DC pin level). */
 void espplay_tft_configure(EspplayBridgeState *s);
+void espplay_touch_configure(EspplayBridgeState *s);
+void espplay_touch_gpio_update(int pin, int level);
+void espplay_touch_input(EspplayBridgeState *s, bool down, uint16_t x, uint16_t y);
+bool espplay_touch_xfer(int bus, uint8_t tx, uint8_t *rx);
 void espplay_tft_gpio_update(int pin, int level);
 bool espplay_spi_slave_exists(int bus);
 void espplay_spi_slave_xfer(int bus, uint8_t byte);
 void espplay_spi_slave_cs(int bus, int level);
 
 /* Peripheral-model queries into bridge state. */
-uint32_t espplay_gpio_input_val(EspplayBridgeState *s);
-uint32_t espplay_gpio_input_mask(EspplayBridgeState *s);
+uint64_t espplay_gpio_input_val(EspplayBridgeState *s);
+uint64_t espplay_gpio_input_mask(EspplayBridgeState *s);
 uint16_t espplay_adc_value(EspplayBridgeState *s, int channel, bool *has);
 
 #endif

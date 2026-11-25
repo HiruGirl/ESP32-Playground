@@ -26,36 +26,59 @@ Merged 4MB flash image (QEMU boots raw `if=mtd`), erased-flash fill 0xFF:
 
 | component      | status | evidence |
 |----------------|--------|----------|
-| ROM boot + stage-2 loader | WORKS | UART: `rst:…, boot:0x12`, `load:` segments, `entry 0x400805e4` |
-| app entry / early init    | partial | app reaches esp-idf startup (core-dump init log) then hangs |
+| ROM boot + stage-2 loader | WORKS | UART: `rst:…, boot:0x12`, `load:` segments, `entry 0x400805e4` (stage-2 entry) |
+| app entry / early init    | partial | GDB breakpoints reached application entry `0x40083078`, subsequent initialization and the FreeRTOS scheduler; full startup still hangs. |
 | UART console  | WORKS | full boot log captured clean over the bridge |
 | TFT ILI9341 (SPI2, DC=2)  | WORKS (model proven with `examples/tft_ili9341`) | pixel-perfect 240x320 render: color bars + checkerboard + 8x8 font text (`work/tft_evidence.png`) |
 | GPIO / DC pin tracking    | WORKS | 13k+ GPIO level events, DC-driven command/data classification |
 | WiFi / BLE / I2C / ADC / buttons / sensors | WORKS (e2e 4/4) | see docs/TESTING.md |
-| SD card (SPI)             | NOT MODELED | no SD/SDMMC device in the espplay bridge |
-| Touch (XPT2046)           | NOT MODELED | no input device model |
+| SD card (SPI)             | PARTIAL | CYD SPI3/GPIO5 card initializes and reads/writes a raw sector in an ESP-IDF guest; FAT and Marauder integration remain unverified. |
+| Touch (XPT2046)           | PARTIAL | Guest test reads raw coordinates, pipelined conversions and active-low IRQ level. GPIO edge interrupts and Marauder integration remain unverified. |
 | ESP32 SPI DMA | PARTIAL | Descriptor-driven TX demonstrated by `examples/tft_dma_test`; descriptor TX/RX chain unit tests pass. Not a complete DMA controller; RX is not yet tested with a guest peripheral. |
-| Marauder app startup      | HANGS | see below |
+| Marauder app startup      | PARTIAL / REBOOTS | Genuine initialization screen captured; Bluetooth clock assertion stops startup (see below). |
 
-## Marauder boot hang (documented limitation)
+## Marauder initialization capture and remaining blockers
 
-Marauder's app hangs in early startup before driving any GPIO/SPI; the task
-watchdog resets the SoC every ~25 s (guest time). HMP/gdbstub-level tracing
-of the ROM shows the CPU looping in the ROM **eFuse double-read verify**
-routine (`ets`-family, ROM 0x4000fc90/0x4000fdd5):
+![Marauder v1.21.0 initialization screen captured from the simulated TFT](images/marauder-initializing.png)
 
-- eFuse op sequence (0x5aa5 opcode -> CONF, start -> CMD, poll busy) completes
-  correctly (the esp32_efuse model's op timer works).
-- The verify passes (the fatal `RTC_CNTL SW_SYS_RST + ill.n` path never
-  executes — confirmed with `-d int` exception tracing).
-- The routine tail-jumps into the ROM CPU-start stub (0x40000450) and the
-  boot chain re-runs; the exact app-side caller loop was not isolated.
+This is the real CYD release firmware's TFT output, captured from RGB565
+rectangle messages at `ICOUNT=5` and reconstructed in the display's raw
+address coordinates. It is an initialization screen, **not** evidence of a
+working interactive UI. A 75-second run using a newly formatted 64 MiB FAT32
+image produced 207,458 TFT rectangles and 6,010 GPIO updates, but UART still
+reported `Failed to mount SD Card` followed by
+`assert failed: esp_bt_controller_init bt.c:1549 (select_src_ret && set_div_ret)`
+and software resets. The earlier raw-sector test image was not FAT formatted;
+using a FAT32 image does not by itself resolve the Marauder mount failure.
+The release binary lacks the ELF symbols required by the existing Bluetooth
+hooks. Bluetooth, Wi-Fi, SD mounting and touch have not been demonstrated in
+Marauder. Instruction timing affects progress; this is not a deterministic
+success test.
 
-Our example firmwares (blink/wifi/… and tft_ili9341) boot fine; Marauder's
-startup path exercises ROM-level eFuse validation that our stack does not yet
-satisfy. Next steps if pursued: synthesize realistic eFuse BLK0 defaults
-(MAC, chip version, calib) in `hw/nvram/esp32_efuse.c`, and trace the ROM
-call chain from the app entry to the verify loop.
+Set `ICOUNT=5` when running `tests/marauder-smoke.mjs` to reproduce the timing
+configuration used for this capture; the script reports observations rather
+than declaring success.
+
+## Earlier Marauder boot hang (documented limitation)
+
+With the TFT, touch, and SD options enabled, a 45-second smoke run
+(`node tests/marauder-smoke.mjs <merged-4mb.bin> <sd-image> 45`) reported
+2,146 UART characters, **zero GPIO updates and zero TFT rectangles**, and
+repeated `TG1WDT_SYS_RESET` resets. Thus none of the independent component
+smoke tests establish that Marauder itself works.
+
+The UART line `entry 0x400805e4` is the **second-stage bootloader** entry,
+not the application entry. A separate GDB-remote breakpoint trace reached the
+real app image entry `0x40083078`, the later CPU startup at `0x40146ab0`, and
+the scheduler path at `0x40098428`, the FreeRTOS `main` task at
+`0x401fe610`, Arduino `app_main` at `0x4013bee0`, and the Arduino loop task
+entering its setup call at `0x40112f34` on CPU 1. Multiple intervening
+breakpoints altered execution timing, so this does not establish normal
+progress without the debugger, nor that display initialization completed.
+A sampled post-stall PC was inside ROM eFuse code; the precise cause and the
+point at which startup stops making progress remain unknown. Earlier evidence
+showed the eFuse verify failure branch was not taken, so the ROM sample alone
+should not be treated as a root-cause diagnosis.
 
 ## Fixes that came out of this test
 
@@ -87,3 +110,66 @@ This is not full hardware emulation: DMA interrupts/status and channel
 arbitration are not implemented, and RX has not been verified end-to-end
 against a guest peripheral. Circular/oversized chains are bounded. Marauder
 still needs a successful startup and an integrated SD/touch test.
+
+## CYD SPI SD card (experimental)
+
+Pass `sdImage` with an existing power-of-two-sized raw SD image inside the
+workspace when creating an ESP32 session. It is copied per session, so guest
+writes do not alter the source and do not survive session deletion. The
+SPI SD card uses GPIO5 software chip select. The default is SPI3; pass
+`sdBus: 2` for the v1.21.0 CYD Marauder binary, whose SD traffic was observed
+on SPI2. Although the board pins are SCK18/MISO19/MOSI23, the GPIO matrix
+means pin numbers alone do not determine the controller. Omit the field to
+preserve existing behavior. Hardware-controlled CS and DMA with an SD card
+are not yet verified.
+
+`node tests/sd-spi.mjs` (with the backend running) creates a temporary 64 MiB
+image and verifies SD initialization, a sector read, a write and readback
+inside an ESP-IDF guest, as well as source-image isolation.
+
+## XPT2046 touch (experimental)
+
+Enable a CYD touch device with session option `touch: {bus: 3, csPin: 33,
+irqPin: 36}`. Send WebSocket messages `{"kind":"touch","down":true,
+"x":1234,"y":3456}` (raw 0–4095 ADC units), and a message with `down:false`
+to release. `node tests/touch-spi.mjs` exercises guest SPI coordinate and
+pipelined pressure reads, and the active-low IRQ *level*. Pressure readings
+are synthetic; GPIO interrupt delivery and real driver calibration have not
+yet been verified. SPI GPIO matrix routing is not modeled, so devices sharing
+a controller rely on correct software chip selects.
+
+## Bluetooth clock register experiment
+
+The ESP-IDF 4.4.7 Bluetooth library's `btdm_lpclk_select_src` reads and
+writes DPORT address `0x3ff000d8` and checks that the selected bit reads back;
+`btdm_lpclk_set_div` similarly checks the low 12 bits of `0x3ff000d4`.
+Previously the DPORT model silently discarded those accesses (the addresses
+are mapped to DPORT, so they are not unassigned accesses). The QEMU patch
+now retains the documented writable fields and reset values of both registers.
+This is a **register-only simulation shim**; it does not simulate Bluetooth
+clock generation or the radio/controller.
+
+With this change the previous clock assertion did not recur during an
+80-second run, but the firmware instead repeatedly panicked at PC
+`0x40174797`, accessing `0x3ff7120c` (LoadStorePIFAddrError); SD still
+failed to mount. The complete captured serial log is
+[`evidence/marauder-clock-registers-uart.txt`](evidence/marauder-clock-registers-uart.txt).
+This is progress past one assertion, not a successful boot or Bluetooth test.
+
+## Marauder SD investigation
+
+The CYD source defines CS5, SCK18, MISO19 and MOSI23. Instrumented QEMU
+showed the release firmware issuing SPI transfers on controller 2 while CS5
+was low; attaching the card only to controller 3 left reads returning zero.
+With `sdBus: 2`, CMD0, CMD8 and ACMD41 reached the card. Three QEMU SD SPI
+issues then blocked Arduino's driver: CMD58 returned idle after ACMD41,
+CMD9 rejected the transfer state, and CMD13 returned the 16-byte CSD instead
+of card status. The patch addresses those cases. The expanded SD guest test
+verifies CMD58 both before and after initialization, CMD9 and CMD13, then
+sector read/write/readback on controller 3.
+
+With an experimental Bluetooth bypass and a 64 MiB FAT32 image, an
+instrumented Marauder run issued CMD17 and CMD24 after initialization; the
+[trace excerpt](evidence/marauder-sd-trace.txt) records the exchanges. This
+does not yet establish a named file readback or a stable interactive session,
+and must not be treated as full Marauder SD integration.

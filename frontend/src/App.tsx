@@ -1,5 +1,5 @@
 // ESP32 Playground — main app shell.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type PointerEvent } from "react";
 import { api, useSession } from "./useSession";
 import Components from "./components/Components";
 import SerialMonitor from "./components/SerialMonitor";
@@ -17,8 +17,9 @@ interface Example {
 }
 
 export default function App() {
-  const { data, send, connect } = useSession();
+  const { data, send, connect, tftCanvas } = useSession();
   const [examples, setExamples] = useState<Example[]>([]);
+  const [cyd, setCyd] = useState(true);
   const [chip, setChip] = useState("esp32");
   const [selected, setSelected] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -42,12 +43,21 @@ export default function App() {
     setStatus("starting session…");
     const fw = ex?.firmware;
     const elf = ex?.elf ?? undefined;
-    const res = await api("/api/sessions", { chip, firmware: fw, elf });
+    const res = await api("/api/sessions", { chip, firmware: fw, elf, ...(chip === "esp32" && cyd ? { tft: { bus: 2, dcPin: 2, w: 240, h: 320 }, touch: { bus: 3, csPin: 33, irqPin: 36 } } : {}) });
     if (res.error) { setStatus(`error: ${res.error}`); return; }
     setSelected(res.id);
     connect(res.id);
     setStatus(`session ${res.id} running (${chip})`);
-  }, [chip, connect]);
+  }, [chip, connect, cyd]);
+
+  const tftTouch = useCallback((event: PointerEvent<HTMLCanvasElement>, down: boolean) => {
+    if (!cyd || chip !== "esp32" || !data.connected) return;
+    const r = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (event.clientX - r.left) / r.width));
+    const y = Math.max(0, Math.min(1, (event.clientY - r.top) / r.height));
+    // CYD portrait calibration and XPT2046_Touchscreen rotation 0.
+    send({ kind: "touch", down, x: Math.round(240 + y * 3560), y: Math.round(4095 - (200 + x * 3500)) });
+  }, [cyd, chip, data.connected, send]);
 
   const control = useCallback(async (cmd: string) => {
     if (!selected) return;
@@ -91,6 +101,9 @@ export default function App() {
       <div className="main">
         <div className="col">
           <div className="panel">
+            <label><input type="checkbox" checked={cyd} onChange={e => setCyd(e.target.checked)} /> CYD TFT and touch (ESP32)</label>
+          </div>
+          <div className="panel">
             <h2>Examples</h2>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
               {examples.map((ex) => (
@@ -118,7 +131,7 @@ export default function App() {
                   method: "POST", body: file,
                 }).then((r) => r.json());
                 if (res.path) {
-                  const s = await api("/api/sessions", { chip, firmware: res.path });
+                  const s = await api("/api/sessions", { chip, firmware: res.path, ...(chip === "esp32" && cyd ? { tft: { bus: 2, dcPin: 2, w: 240, h: 320 }, touch: { bus: 3, csPin: 33, irqPin: 36 } } : {}) });
                   if (!s.error) { setSelected(s.id); connect(s.id); setStatus("custom firmware running"); }
                   else setStatus(`error: ${s.error}`);
                 }
@@ -130,6 +143,14 @@ export default function App() {
           <LogicAnalyzer data={data} sessionId={data.id} />
         </div>
         <div className="col">
+          <div className="panel">
+            <h2>CYD TFT</h2>
+            <canvas ref={tftCanvas} width={240} height={320} style={{ width: "min(100%, 240px)", height: "auto", background: "#000", imageRendering: "pixelated", touchAction: "none" }}
+              onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); tftTouch(e, true); }}
+              onPointerMove={e => { if (e.buttons) tftTouch(e, true); }}
+              onPointerUp={e => tftTouch(e, false)} onPointerCancel={e => tftTouch(e, false)} />
+            <p className="mono">ILI9341 output · touch uses approximate CYD portrait calibration.</p>
+          </div>
           <Components data={data} send={send} />
           <WifiPanel data={data} send={send} />
         </div>

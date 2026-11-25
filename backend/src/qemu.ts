@@ -12,6 +12,9 @@ export interface SessionConfig {
   firmware: string; // path to merged .bin
   elf?: string; // optional .elf for symbol hooks
   icount?: number;
+  touch?: { bus: number; csPin?: number; irqPin?: number };
+  sdImage?: string; // optional CYD SPI SD image; copied per session
+  sdBus?: 2 | 3; // QEMU SPI controller, default 3
   flashSize?: string; // e.g. "2MB"
   tft?: { bus: number; dcPin?: number; w?: number; h?: number }; // virtual SPI LCD
 }
@@ -68,18 +71,23 @@ export class QemuSession extends EventEmitter {
     const flash = join(this.tmp, "flash.bin");
     copyFileSync(this.cfg.firmware, flash);
 
+    const sd = this.cfg.sdImage ? join(this.tmp, "sd.img") : undefined;
+    if (sd && this.cfg.sdImage) copyFileSync(this.cfg.sdImage, sd);
+
     const port = await this.listenBridge();
     this.port = port;
     const machine = this.cfg.chip;
     const args = [
-      "-machine", machine,
+      "-machine", machine + (sd ? ",sd-spi=on" + (this.cfg.sdBus === 2 ? ",sd-spi-hspi=on" : "") : ""),
       "-display", "none",
       "-serial", "none",
       "-drive", `file=${flash},if=mtd,format=raw`,
+      ...(sd ? ["-drive", `file=${sd},if=sd,format=raw`] : []),
       "-icount", String(Math.max(1, Math.min(this.cfg.icount ?? 3, 10))), // QEMU esp32 icount shift max = 10
       "-chardev", `socket,id=espsock,host=127.0.0.1,port=${port},server=off`,
       "-netdev", "user,id=net0",
       "-device", `espplay.bridge,chardev=espsock,netdev=net0,cave-addr=${CAVE[machine]}` +
+        (this.cfg.touch ? `,touch-bus=${this.cfg.touch.bus},touch-cs-pin=${this.cfg.touch.csPin ?? 33},touch-irq-pin=${this.cfg.touch.irqPin ?? 36}` : "") +
         (this.cfg.elf ? `,elf=${resolve(this.cfg.elf)}` : "") +
         (this.cfg.tft
           ? `,tft-bus=${this.cfg.tft.bus}` +

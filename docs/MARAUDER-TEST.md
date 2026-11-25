@@ -35,9 +35,31 @@ Merged 4MB flash image (QEMU boots raw `if=mtd`), erased-flash fill 0xFF:
 | SD card (SPI)             | PARTIAL | CYD SPI3/GPIO5 card initializes and reads/writes a raw sector in an ESP-IDF guest; FAT and Marauder integration remain unverified. |
 | Touch (XPT2046)           | PARTIAL | Guest test reads raw coordinates, pipelined conversions and active-low IRQ level. GPIO edge interrupts and Marauder integration remain unverified. |
 | ESP32 SPI DMA | PARTIAL | Descriptor-driven TX demonstrated by `examples/tft_dma_test`; descriptor TX/RX chain unit tests pass. Not a complete DMA controller; RX is not yet tested with a guest peripheral. |
-| Marauder app startup      | HANGS | see below |
+| Marauder app startup      | PARTIAL / REBOOTS | Genuine initialization screen captured; Bluetooth clock assertion stops startup (see below). |
 
-## Marauder boot hang (documented limitation)
+## Marauder initialization capture and remaining blockers
+
+![Marauder v1.21.0 initialization screen captured from the simulated TFT](images/marauder-initializing.png)
+
+This is the real CYD release firmware's TFT output, captured from RGB565
+rectangle messages at `ICOUNT=5` and reconstructed in the display's raw
+address coordinates. It is an initialization screen, **not** evidence of a
+working interactive UI. A 75-second run using a newly formatted 64 MiB FAT32
+image produced 207,458 TFT rectangles and 6,010 GPIO updates, but UART still
+reported `Failed to mount SD Card` followed by
+`assert failed: esp_bt_controller_init bt.c:1549 (select_src_ret && set_div_ret)`
+and software resets. The earlier raw-sector test image was not FAT formatted;
+using a FAT32 image does not by itself resolve the Marauder mount failure.
+The release binary lacks the ELF symbols required by the existing Bluetooth
+hooks. Bluetooth, Wi-Fi, SD mounting and touch have not been demonstrated in
+Marauder. Instruction timing affects progress; this is not a deterministic
+success test.
+
+Set `ICOUNT=5` when running `tests/marauder-smoke.mjs` to reproduce the timing
+configuration used for this capture; the script reports observations rather
+than declaring success.
+
+## Earlier Marauder boot hang (documented limitation)
 
 With the TFT, touch, and SD options enabled, a 45-second smoke run
 (`node tests/marauder-smoke.mjs <merged-4mb.bin> <sd-image> 45`) reported

@@ -26,8 +26,8 @@ Merged 4MB flash image (QEMU boots raw `if=mtd`), erased-flash fill 0xFF:
 
 | component      | status | evidence |
 |----------------|--------|----------|
-| ROM boot + stage-2 loader | WORKS | UART: `rst:…, boot:0x12`, `load:` segments, `entry 0x400805e4` |
-| app entry / early init    | partial | app reaches esp-idf startup (core-dump init log) then hangs |
+| ROM boot + stage-2 loader | WORKS | UART: `rst:…, boot:0x12`, `load:` segments, `entry 0x400805e4` (stage-2 entry) |
+| app entry / early init    | partial | GDB breakpoints reached application entry `0x40083078`, subsequent initialization and the FreeRTOS scheduler; full startup still hangs. |
 | UART console  | WORKS | full boot log captured clean over the bridge |
 | TFT ILI9341 (SPI2, DC=2)  | WORKS (model proven with `examples/tft_ili9341`) | pixel-perfect 240x320 render: color bars + checkerboard + 8x8 font text (`work/tft_evidence.png`) |
 | GPIO / DC pin tracking    | WORKS | 13k+ GPIO level events, DC-driven command/data classification |
@@ -39,23 +39,21 @@ Merged 4MB flash image (QEMU boots raw `if=mtd`), erased-flash fill 0xFF:
 
 ## Marauder boot hang (documented limitation)
 
-Marauder's app hangs in early startup before driving any GPIO/SPI; the task
-watchdog resets the SoC every ~25 s (guest time). HMP/gdbstub-level tracing
-of the ROM shows the CPU looping in the ROM **eFuse double-read verify**
-routine (`ets`-family, ROM 0x4000fc90/0x4000fdd5):
+With the TFT, touch, and SD options enabled, a 45-second smoke run
+(`node tests/marauder-smoke.mjs <merged-4mb.bin> <sd-image> 45`) reported
+2,146 UART characters, **zero GPIO updates and zero TFT rectangles**, and
+repeated `TG1WDT_SYS_RESET` resets. Thus none of the independent component
+smoke tests establish that Marauder itself works.
 
-- eFuse op sequence (0x5aa5 opcode -> CONF, start -> CMD, poll busy) completes
-  correctly (the esp32_efuse model's op timer works).
-- The verify passes (the fatal `RTC_CNTL SW_SYS_RST + ill.n` path never
-  executes — confirmed with `-d int` exception tracing).
-- The routine tail-jumps into the ROM CPU-start stub (0x40000450) and the
-  boot chain re-runs; the exact app-side caller loop was not isolated.
-
-Our example firmwares (blink/wifi/… and tft_ili9341) boot fine; Marauder's
-startup path exercises ROM-level eFuse validation that our stack does not yet
-satisfy. Next steps if pursued: synthesize realistic eFuse BLK0 defaults
-(MAC, chip version, calib) in `hw/nvram/esp32_efuse.c`, and trace the ROM
-call chain from the app entry to the verify loop.
+The UART line `entry 0x400805e4` is the **second-stage bootloader** entry,
+not the application entry. A separate GDB-remote breakpoint trace reached the
+real app image entry `0x40083078`, the later CPU startup at `0x40146ab0`, and
+the scheduler path at `0x40098428`; it also observed the second CPU start.
+These are observations, not proof that the main task or display initialized.
+A sampled post-stall PC was inside ROM eFuse code; the precise cause and the
+point at which startup stops making progress remain unknown. Earlier evidence
+showed the eFuse verify failure branch was not taken, so the ROM sample alone
+should not be treated as a root-cause diagnosis.
 
 ## Fixes that came out of this test
 

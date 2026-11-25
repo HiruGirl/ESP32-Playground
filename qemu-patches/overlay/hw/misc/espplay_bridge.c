@@ -131,12 +131,12 @@ void espplay_log(const char *fmt, ...)
                      (const uint8_t *)buf, strlen(buf));
 }
 
-uint32_t espplay_gpio_input_val(EspplayBridgeState *s)
+uint64_t espplay_gpio_input_val(EspplayBridgeState *s)
 {
     return s ? s->gpio_input_val : 0;
 }
 
-uint32_t espplay_gpio_input_mask(EspplayBridgeState *s)
+uint64_t espplay_gpio_input_mask(EspplayBridgeState *s)
 {
     return s ? s->gpio_input_mask : 0;
 }
@@ -196,20 +196,20 @@ static void espplay_handle_cmd(EspplayBridgeState *s, uint8_t type,
         espplay_send_msg(s, ESPPLAY_MSG_HELLO, (const uint8_t[]){ 1, 0, 0, 0, s->chip_id }, 5);
         break;
     case ESPPLAY_CMD_GPIO_INPUT:
-        if (len >= 2 && p[0] < 32) {
+        if (len >= 2 && p[0] < 40) {
             if (p[1] & 1) {
-                s->gpio_input_val |= 1u << p[0];
+                s->gpio_input_val |= UINT64_C(1) << p[0];
             } else {
-                s->gpio_input_val &= ~(1u << p[0]);
+                s->gpio_input_val &= ~(UINT64_C(1) << p[0]);
             }
-            s->gpio_input_mask |= 1u << p[0];
+            s->gpio_input_mask |= UINT64_C(1) << p[0];
             espplay_gpio_input_changed(s, p[0]);
         }
         break;
     case ESPPLAY_CMD_ADC_VALUE:
         if (len >= 3 && p[0] < 32) {
             s->adc_value[p[0]] = p[1] | (p[2] << 8);
-            s->adc_mask |= 1u << p[0];
+            s->adc_mask |= UINT64_C(1) << p[0];
         }
         break;
     case ESPPLAY_CMD_SENSOR_CFG:

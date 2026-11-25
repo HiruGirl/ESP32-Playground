@@ -83,8 +83,8 @@ typedef struct EspplayBridgeState {
     uint32_t rxbuf_cap;
 
     /* GPIO input drive from backend */
-    uint32_t gpio_input_val;
-    uint32_t gpio_input_mask;
+    uint64_t gpio_input_val;
+    uint64_t gpio_input_mask;
 
     /* ADC values injected by backend */
     uint16_t adc_value[32];
@@ -140,8 +140,8 @@ void espplay_spi_slave_xfer(int bus, uint8_t byte);
 void espplay_spi_slave_cs(int bus, int level);
 
 /* Peripheral-model queries into bridge state. */
-uint32_t espplay_gpio_input_val(EspplayBridgeState *s);
-uint32_t espplay_gpio_input_mask(EspplayBridgeState *s);
+uint64_t espplay_gpio_input_val(EspplayBridgeState *s);
+uint64_t espplay_gpio_input_mask(EspplayBridgeState *s);
 uint16_t espplay_adc_value(EspplayBridgeState *s, int channel, bool *has);
 
 #endif

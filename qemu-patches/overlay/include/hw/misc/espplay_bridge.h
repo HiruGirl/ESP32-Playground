@@ -39,6 +39,9 @@ enum EspplayMsgType {
     ESPPLAY_MSG_LOG             = 0x10, /* ascii text (debug) */
     ESPPLAY_MSG_DISPLAY_FB      = 0x11, /* u8 bus, u8 addr, u8 page, u8 col, 1024B fb */
     ESPPLAY_MSG_LCD_TEXT        = 0x12, /* u8 bus, u8 addr, u8 row, u8 col, 32B text */
+    ESPPLAY_MSG_TFT_FRAME       = 0x13, /* u16 x, u16 y, u16 w, u16 h, u8 madctl,
+                                           u8 colmod, u32 nbytes, u16 pad,
+                                           rgb565 (BE) */
 
     /* Backend -> QEMU */
     ESPPLAY_CMD_PING            = 0x80,
@@ -102,6 +105,12 @@ typedef struct EspplayBridgeState {
     char *elf_path;
     uint32_t cave_addr;
     MemoryRegion cave_mr;
+
+    /* TFT (SPI LCD) model — tft_bus < 0 disables it */
+    int32_t tft_bus;
+    int32_t tft_dc_pin;
+    uint32_t tft_w;
+    uint32_t tft_h;
 } EspplayBridgeState;
 
 /* Global accessor used by patched peripheral models. NULL when the bridge
@@ -121,6 +130,14 @@ void espplay_rmt_frame(int channel, const uint8_t *bytes, size_t len);
 void espplay_i2c_write(int bus, int addr, const uint8_t *bytes, size_t len);
 void espplay_uart_data(int uart, const uint8_t *bytes, size_t len);
 void espplay_log(const char *fmt, ...);
+
+/* TFT (SPI LCD) model: config + dispatch hooks (called from esp32_spi.c and
+ * from the GPIO out path for the DC pin level). */
+void espplay_tft_configure(EspplayBridgeState *s);
+void espplay_tft_gpio_update(int pin, int level);
+bool espplay_spi_slave_exists(int bus);
+void espplay_spi_slave_xfer(int bus, uint8_t byte);
+void espplay_spi_slave_cs(int bus, int level);
 
 /* Peripheral-model queries into bridge state. */
 uint32_t espplay_gpio_input_val(EspplayBridgeState *s);

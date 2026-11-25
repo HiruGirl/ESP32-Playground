@@ -560,3 +560,231 @@ void espplay_send_lcd_frame(const uint8_t *meta, const uint8_t *lines, int len)
     espplay_send_msg(s, ESPPLAY_MSG_LCD_TEXT, p, 4 + len);
     g_free(p);
 }
+
+/* ================================================================== */
+/* TFT (SPI LCD) model - ST7789 / ILI9341 command subset over SPI      */
+/*                                                                     */
+/* Bytes arrive from the esp32_spi controller transfer hook; the DC    */
+/* pin level (tracked via the GPIO out path) tells us whether a byte   */
+/* is a command (dc low) or data (dc high).  Frame updates are flushed  */
+/* as ESPPLAY_MSG_TFT_FRAME dirty rects on chip-select deassert.       */
+/* ================================================================== */
+
+#define TFT_PANEL_MAX 320
+
+typedef struct EspplayTft {
+    bool enabled;
+    int bus;
+    int dc_pin;
+    int dc_level;
+
+    /* command state machine */
+    bool in_cmd;
+    uint8_t cmd;
+    uint8_t params[8];
+    int param_need;
+    int param_got;
+
+    /* address window + stream cursor (raw panel addressing) */
+    uint16_t xs, xe, ys, ye;
+    uint16_t cx, cy;
+    uint8_t madctl, colmod;
+    bool pix_hi_pending;
+    uint8_t pix_hi;
+
+    uint16_t *fb;                   /* TFT_PANEL_MAX^2, big-endian bytes */
+
+    /* dirty rect since last flush (raw panel coords) */
+    int dx0, dy0, dx1, dy1;
+    bool dirty;
+} EspplayTft;
+
+static EspplayTft espplay_tft;
+
+static int tft_cmd_params(uint8_t c)
+{
+    switch (c) {
+    case 0x2A: /* CASET */
+    case 0x2B: /* RASET */
+        return 4;
+    case 0x2C: /* RAMWR */
+    case 0x2E: /* RAMRD */
+        return -1;                  /* open-ended stream */
+    case 0x26: /* GAMSET */
+    case 0x36: /* MADCTL */
+    case 0x3A: /* COLMOD */
+        return 1;
+    case 0x30: case 0x31: case 0x32: case 0x33: /* scroll */
+        return 6;
+    case 0x37: /* VSCSAD */
+        return 2;
+    default:
+        return 0;
+    }
+}
+
+void espplay_tft_configure(EspplayBridgeState *s)
+{
+    EspplayTft *t = &espplay_tft;
+    memset(t, 0, sizeof(*t));
+    if (!s || s->tft_bus < 0) {
+        return;
+    }
+    t->enabled = true;
+    t->bus = s->tft_bus;
+    t->dc_pin = s->tft_dc_pin;
+    t->dc_level = 1;
+    t->xs = t->ys = 0;
+    t->xe = t->ye = TFT_PANEL_MAX - 1;
+    t->cx = t->cy = 0;
+    t->madctl = 0;
+    t->colmod = 0x55;
+    t->fb = g_malloc0(TFT_PANEL_MAX * TFT_PANEL_MAX * 2);
+    espplay_log("espplay: TFT model on SPI bus %d (DC=GPIO%d, %ux%u)\n",
+                t->bus, t->dc_pin, s->tft_w, s->tft_h);
+}
+
+void espplay_tft_gpio_update(int pin, int level)
+{
+    EspplayTft *t = &espplay_tft;
+    if (t->enabled && pin == t->dc_pin) {
+        t->dc_level = level ? 1 : 0;
+    }
+}
+
+bool espplay_spi_slave_exists(int bus)
+{
+    return espplay_tft.enabled && espplay_tft.bus == bus;
+}
+
+void espplay_spi_slave_cs(int bus, int level)
+{
+    EspplayTft *t = &espplay_tft;
+    if (!espplay_spi_slave_exists(bus)) {
+        return;
+    }
+    if (level) {
+        /* deassert: flush whatever was drawn */
+        if (t->dirty) {
+            int x = t->dx0, y = t->dy0;
+            int w = t->dx1 - t->dx0 + 1;
+            int h = t->dy1 - t->dy0 + 1;
+            uint32_t nbytes = (uint32_t)w * h * 2;
+            uint8_t *p = g_malloc(16 + nbytes);
+            p[0] = x & 0xFF;  p[1] = x >> 8;
+            p[2] = y & 0xFF;  p[3] = y >> 8;
+            p[4] = w & 0xFF;  p[5] = w >> 8;
+            p[6] = h & 0xFF;  p[7] = h >> 8;
+            p[8] = t->madctl;
+            p[9] = t->colmod;
+            p[10] = nbytes & 0xFF;
+            p[11] = (nbytes >> 8) & 0xFF;
+            p[12] = (nbytes >> 16) & 0xFF;
+            p[13] = (nbytes >> 24) & 0xFF;
+            p[14] = p[15] = 0;
+            for (int row = 0; row < h; row++) {
+                const uint8_t *src = (const uint8_t *)t->fb +
+                    ((uint32_t)(y + row) * TFT_PANEL_MAX + x) * 2;
+                memcpy(p + 16 + (uint32_t)row * w * 2, src, (uint32_t)w * 2);
+            }
+            espplay_send_msg(espplay_bridge_get(), ESPPLAY_MSG_TFT_FRAME,
+                             p, 16 + nbytes);
+            g_free(p);
+            t->dirty = false;
+        }
+    }
+}
+
+static void tft_push_pixel(EspplayTft *t, uint16_t color)
+{
+    uint32_t x = t->cx, y = t->cy;
+    if (x >= TFT_PANEL_MAX || y >= TFT_PANEL_MAX) {
+        return;
+    }
+    uint8_t *dst = (uint8_t *)t->fb + ((y * TFT_PANEL_MAX + x) * 2);
+    dst[0] = color >> 8;
+    dst[1] = color & 0xFF;
+    if (!t->dirty) {
+        t->dx0 = t->dx1 = x;
+        t->dy0 = t->dy1 = y;
+        t->dirty = true;
+    } else {
+        if ((int)x < t->dx0) t->dx0 = x;
+        if ((int)x > t->dx1) t->dx1 = x;
+        if ((int)y < t->dy0) t->dy0 = y;
+        if ((int)y > t->dy1) t->dy1 = y;
+    }
+    /* auto-increment across the window: x fastest, then y */
+    if (++t->cx > t->xe) {
+        t->cx = t->xs;
+        if (++t->cy > t->ye) {
+            t->cy = t->ys;
+        }
+    }
+}
+
+void espplay_spi_slave_xfer(int bus, uint8_t byte)
+{
+    EspplayTft *t = &espplay_tft;
+    if (!espplay_spi_slave_exists(bus)) {
+        return;
+    }
+    if (!t->dc_level) {
+        /* command byte */
+        t->cmd = byte;
+        t->param_got = 0;
+        t->param_need = tft_cmd_params(byte);
+        t->pix_hi_pending = false;
+        if (byte == 0x01) {         /* SWRESET */
+            t->xs = t->ys = 0;
+            t->xe = t->ye = TFT_PANEL_MAX - 1;
+            t->cx = t->cy = 0;
+            t->madctl = 0;
+            t->colmod = 0x55;
+        }
+        return;
+    }
+    /* data byte */
+    if (t->param_need < 0) {
+        /* open stream: RAMWR pixel data */
+        if (t->cmd == 0x2C) {
+            if (!t->pix_hi_pending) {
+                t->pix_hi = byte;
+                t->pix_hi_pending = true;
+            } else {
+                t->pix_hi_pending = false;
+                tft_push_pixel(t, ((uint16_t)t->pix_hi << 8) | byte);
+            }
+        }
+        return;
+    }
+    if (t->param_got < t->param_need && t->param_got < 8) {
+        t->params[t->param_got++] = byte;
+    }
+    if (t->param_got == t->param_need) {
+        switch (t->cmd) {
+        case 0x2A:
+            t->xs = ((uint16_t)t->params[0] << 8) | t->params[1];
+            t->xe = ((uint16_t)t->params[2] << 8) | t->params[3];
+            if (t->xs >= TFT_PANEL_MAX) t->xs = TFT_PANEL_MAX - 1;
+            if (t->xe >= TFT_PANEL_MAX) t->xe = TFT_PANEL_MAX - 1;
+            t->cx = t->xs;
+            break;
+        case 0x2B:
+            t->ys = ((uint16_t)t->params[0] << 8) | t->params[1];
+            t->ye = ((uint16_t)t->params[2] << 8) | t->params[3];
+            if (t->ys >= TFT_PANEL_MAX) t->ys = TFT_PANEL_MAX - 1;
+            if (t->ye >= TFT_PANEL_MAX) t->ye = TFT_PANEL_MAX - 1;
+            t->cy = t->ys;
+            break;
+        case 0x36:
+            t->madctl = t->params[0];
+            break;
+        case 0x3A:
+            t->colmod = t->params[0];
+            break;
+        default:
+            break;
+        }
+    }
+}

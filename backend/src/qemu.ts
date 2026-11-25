@@ -13,6 +13,7 @@ export interface SessionConfig {
   elf?: string; // optional .elf for symbol hooks
   icount?: number;
   flashSize?: string; // e.g. "2MB"
+  tft?: { bus: number; dcPin?: number; w?: number; h?: number }; // virtual SPI LCD
 }
 
 export interface SessionInfo {
@@ -79,7 +80,13 @@ export class QemuSession extends EventEmitter {
       "-chardev", `socket,id=espsock,host=127.0.0.1,port=${port},server=off`,
       "-netdev", "user,id=net0",
       "-device", `espplay.bridge,chardev=espsock,netdev=net0,cave-addr=${CAVE[machine]}` +
-        (this.cfg.elf ? `,elf=${resolve(this.cfg.elf)}` : ""),
+        (this.cfg.elf ? `,elf=${resolve(this.cfg.elf)}` : "") +
+        (this.cfg.tft
+          ? `,tft-bus=${this.cfg.tft.bus}` +
+            `,tft-dc-pin=${this.cfg.tft.dcPin ?? 2}` +
+            `,tft-w=${this.cfg.tft.w ?? 240}` +
+            `,tft-h=${this.cfg.tft.h ?? 320}`
+          : ""),
     ];
     this.proc = spawn(this.qemuPath, args, { cwd: this.tmp, stdio: ["ignore", "pipe", "pipe"] });
     this.startedAt = Date.now();

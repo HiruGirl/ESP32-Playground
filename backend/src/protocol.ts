@@ -18,6 +18,7 @@ export const MSG = {
   LOG: 0x10,
   DISPLAY_FB: 0x11,
   LCD_TEXT: 0x12,
+  TFT_FRAME: 0x13,
 
   PING: 0x80,
   GPIO_INPUT: 0x81,

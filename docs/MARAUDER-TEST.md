@@ -134,3 +134,21 @@ pipelined pressure reads, and the active-low IRQ *level*. Pressure readings
 are synthetic; GPIO interrupt delivery and real driver calibration have not
 yet been verified. SPI GPIO matrix routing is not modeled, so devices sharing
 a controller rely on correct software chip selects.
+
+## Bluetooth clock register experiment
+
+The ESP-IDF 4.4.7 Bluetooth library's `btdm_lpclk_select_src` reads and
+writes DPORT address `0x3ff000d8` and checks that the selected bit reads back;
+`btdm_lpclk_set_div` similarly checks the low 12 bits of `0x3ff000d4`.
+Previously the DPORT model silently discarded those accesses (the addresses
+are mapped to DPORT, so they are not unassigned accesses). The QEMU patch
+now retains the documented writable fields and reset values of both registers.
+This is a **register-only simulation shim**; it does not simulate Bluetooth
+clock generation or the radio/controller.
+
+With this change the previous clock assertion did not recur during an
+80-second run, but the firmware instead repeatedly panicked at PC
+`0x40174797`, accessing `0x3ff7120c` (LoadStorePIFAddrError); SD still
+failed to mount. The complete captured serial log is
+[`evidence/marauder-clock-registers-uart.txt`](evidence/marauder-clock-registers-uart.txt).
+This is progress past one assertion, not a successful boot or Bluetooth test.

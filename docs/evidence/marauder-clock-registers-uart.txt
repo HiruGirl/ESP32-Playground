@@ -1,0 +1,113 @@
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:1184
+load:0x40078000,len:13260
+load:0x40080400,len:3028
+entry 0x400805e4
+ESP-IDF version is: v4.4.5
+Using external SPI configuration...
+Failed to mount SD Card
+SD Card NOT Supported
+Guru Meditation Error: Core  0 panic'ed (LoadStorePIFAddrError). Exception was unhandled.
+
+Core  0 register dump:
+PC      : 0x40174797  PS      : 0x00060330  A0      : 0x80174fa8  A1      : 0x3ffd7c50  
+A2      : 0x00000001  A3      : 0x3ffd7c70  A4      : 0xffffffff  A5      : 0x00000000  
+A6      : 0x3ffb5ebc  A7      : 0x80000001  A8      : 0xfffffffe  A9      : 0x3ff7120c  
+A10     : 0x00000001  A11     : 0x00000000  A12     : 0x3ffb5d1c  A13     : 0x00000000  
+A14     : 0x00000001  A15     : 0x003fffff  SAR     : 0x00000000  EXCCAUSE: 0x0000000f  
+EXCVADDR: 0x3ff7120c  LBEG    : 0x40091718  LEND    : 0x4009172e  LCOUNT  : 0xffffffff  
+
+
+Backtrace: 0x40174794:0x3ffd7c50 0x40174fa5:0x3ffd7c70
+
+
+
+
+ELF file SHA256: ea8b5ac808491b31
+
+Rebooting...
+ets Jul 29 2019 12:21:46
+
+rst:0xc (SW_CPU_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:1184
+load:0x40078000,len:13260
+load:0x40080400,len:3028
+entry 0x400805e4
+ESP-IDF version is: v4.4.5
+Using external SPI configuration...
+Failed to mount SD Card
+SD Card NOT Supported
+Guru Meditation Error: Core  0 panic'ed (LoadStorePIFAddrError). Exception was unhandled.
+
+Core  0 register dump:
+PC      : 0x40174797  PS      : 0x00060030  A0      : 0x80174fa8  A1      : 0x3ffd7c50  
+A2      : 0x00000001  A3      : 0x3ffd7c70  A4      : 0xffffffff  A5      : 0x00000000  
+A6      : 0x3ffb5ebc  A7      : 0x80000001  A8      : 0xfffffffe  A9      : 0x3ff7120c  
+A10     : 0x00000001  A11     : 0x00000000  A12     : 0x3ffb5d1c  A13     : 0x00000000  
+A14     : 0x00000000  A15     : 0x003fffff  SAR     : 0x00000000  EXCCAUSE: 0x0000000f  
+EXCVADDR: 0x3ff7120c  LBEG    : 0x40091718  LEND    : 0x4009172e  LCOUNT  : 0xffffffff  
+
+
+Backtrace: 0x40174794:0x3ffd7c50 0x40174fa5:0x3ffd7c70
+
+
+
+
+ELF file SHA256: ea8b5ac808491b31
+
+Rebooting...
+ets Jul 29 2019 12:21:46
+
+rst:0xc (SW_CPU_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:1184
+load:0x40078000,len:13260
+load:0x40080400,len:3028
+entry 0x400805e4
+ESP-IDF version is: v4.4.5
+Using external SPI configuration...
+Failed to mount SD Card
+SD Card NOT Supported
+Guru Meditation Error: Core  0 panic'ed (LoadStorePIFAddrError). Exception was unhandled.
+
+Core  0 register dump:
+PC      : 0x40174797  PS      : 0x00060330  A0      : 0x80174fa8  A1      : 0x3ffd7c50  
+A2      : 0x00000001  A3      : 0x3ffd7c70  A4      : 0xffffffff  A5      : 0x00000000  
+A6      : 0x3ffb5ebc  A7      : 0x80000001  A8      : 0xfffffffe  A9      : 0x3ff7120c  
+A10     : 0x00000001  A11     : 0x00000000  A12     : 0x3ffb5d1c  A13     : 0x00000000  
+A14     : 0x00000001  A15     : 0x003fffff  SAR     : 0x00000000  EXCCAUSE: 0x0000000f  
+EXCVADDR: 0x3ff7120c  LBEG    : 0x40091718  LEND    : 0x4009172e  LCOUNT  : 0xffffffff  
+
+
+Backtrace: 0x40174794:0x3ffd7c50 0x40174fa5:0x3ffd7c70
+
+
+
+
+ELF file SHA256: ea8b5ac808491b31
+
+Rebooting...
+ets Jul 29 2019 12:21:46
+
+rst:0xc (SW_CPU_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:1184
+load:0x40078000,len:13260
+load:0x40080400,len:3028
+entry 0x400805e4
+ESP-IDF version is: v4.4.5
+Using external SPI configuration...
+
+Marauder smoke: 3945 UART characters, 8011 GPIO updates, 270248 TFT rectangles

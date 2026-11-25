@@ -958,3 +958,65 @@ index 1c818ff682..318c64fcb8 100644
  }
  
  #ifdef CONFIG_LINUX
+diff --git a/hw/misc/esp32_dport.c b/hw/misc/esp32_dport.c
+index 1bb2435f48..f2897d5dc9 100644
+--- a/hw/misc/esp32_dport.c
++++ b/hw/misc/esp32_dport.c
+@@ -27,6 +27,9 @@
+ 
+ #define ESP32_DPORT_SIZE        (DR_REG_DPORT_APB_BASE - DR_REG_DPORT_BASE)
+ 
++#define DPORT_BT_LPCK_DIV_INT  0x0d4
++#define DPORT_BT_LPCK_DIV_FRAC 0x0d8
++
+ #define MMU_RANGE_SIZE          (ESP32_CACHE_PAGES_PER_REGION * sizeof(uint32_t))
+ #define MMU_RANGE_LAST          (MMU_RANGE_SIZE - sizeof(uint32_t))
+ 
+@@ -119,6 +122,12 @@ static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
+     case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
+         r = get_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr);
+         break;
++    case DPORT_BT_LPCK_DIV_INT:
++        r = s->bt_lpclk_div_int;
++        break;
++    case DPORT_BT_LPCK_DIV_FRAC:
++        r = s->bt_lpclk_div_frac;
++        break;
+     case A_DPORT_SLAVE_SPI_CONFIG:
+         r = s->slave_spi_config_reg;
+         break;
+@@ -221,6 +230,12 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
+     case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
+         set_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr, value);
+         break;
++    case DPORT_BT_LPCK_DIV_INT:
++        s->bt_lpclk_div_int = value & 0x1fff;
++        break;
++    case DPORT_BT_LPCK_DIV_FRAC:
++        s->bt_lpclk_div_frac = value & 0x0fffffff;
++        break;
+     case A_DPORT_SLAVE_SPI_CONFIG:
+         s->slave_spi_config_reg = value;
+         qemu_set_irq(s->flash_enc_en_gpio, FIELD_EX32(value, DPORT_SLAVE_SPI_CONFIG, SLAVE_SPI_ENCRYPT_ENABLE));
+@@ -368,6 +383,8 @@ static void esp32_dport_reset_hold(Object *obj, ResetType type)
+ {
+     Esp32DportState *s = ESP32_DPORT(obj);
+ 
++    s->bt_lpclk_div_int = 0xff;
++    s->bt_lpclk_div_frac = 0x02001001;
+     s->appcpu_boot_addr = 0;
+     s->appcpu_clkgate_state = false;
+     s->appcpu_reset_state = true;
+diff --git a/include/hw/misc/esp32_dport.h b/include/hw/misc/esp32_dport.h
+index 3dfc0ab4ce..b4517ff8f7 100644
+--- a/include/hw/misc/esp32_dport.h
++++ b/include/hw/misc/esp32_dport.h
+@@ -74,6 +74,8 @@ typedef struct Esp32DportState {
+     uint32_t cpuperiod_sel;
+     uint32_t cache_ill_trap_en_reg;
+     uint32_t slave_spi_config_reg;
++    uint32_t bt_lpclk_div_int;
++    uint32_t bt_lpclk_div_frac;
+ 
+ } Esp32DportState;
+ 

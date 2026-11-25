@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    allowedHosts: [".e2b.app"],
     proxy: {
       "/api": "http://127.0.0.1:8760",
       "/ws": { target: "ws://127.0.0.1:8760", ws: true },

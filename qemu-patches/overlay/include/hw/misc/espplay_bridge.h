@@ -124,6 +124,8 @@ void espplay_send_msg(EspplayBridgeState *s, uint8_t type,
 /* Notifications from peripheral models into the bridge (safe to call with
  * no bridge present). */
 void espplay_gpio_out_update(int pin, int level);
+/* Optional GPIO-selected SPI SD card, attached by the ESP32 machine. */
+void espplay_sd_attach(qemu_irq cs, int pin);
 void espplay_gpio_mode_update(int pin, int mode, int pull);
 void espplay_ledc_update(int timer, uint32_t freq, int channel, uint32_t duty_permyriad);
 void espplay_rmt_frame(int channel, const uint8_t *bytes, size_t len);

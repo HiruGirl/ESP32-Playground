@@ -32,7 +32,7 @@ Merged 4MB flash image (QEMU boots raw `if=mtd`), erased-flash fill 0xFF:
 | TFT ILI9341 (SPI2, DC=2)  | WORKS (model proven with `examples/tft_ili9341`) | pixel-perfect 240x320 render: color bars + checkerboard + 8x8 font text (`work/tft_evidence.png`) |
 | GPIO / DC pin tracking    | WORKS | 13k+ GPIO level events, DC-driven command/data classification |
 | WiFi / BLE / I2C / ADC / buttons / sensors | WORKS (e2e 4/4) | see docs/TESTING.md |
-| SD card (SPI)             | NOT MODELED | no SD/SDMMC device in the espplay bridge |
+| SD card (SPI)             | PARTIAL | CYD SPI3/GPIO5 card initializes and reads/writes a raw sector in an ESP-IDF guest; FAT and Marauder integration remain unverified. |
 | Touch (XPT2046)           | NOT MODELED | no input device model |
 | ESP32 SPI DMA | PARTIAL | Descriptor-driven TX demonstrated by `examples/tft_dma_test`; descriptor TX/RX chain unit tests pass. Not a complete DMA controller; RX is not yet tested with a guest peripheral. |
 | Marauder app startup      | HANGS | see below |
@@ -87,3 +87,16 @@ This is not full hardware emulation: DMA interrupts/status and channel
 arbitration are not implemented, and RX has not been verified end-to-end
 against a guest peripheral. Circular/oversized chains are bounded. Marauder
 still needs a successful startup and an integrated SD/touch test.
+
+## CYD SPI SD card (experimental)
+
+Pass `sdImage` with an existing power-of-two-sized raw SD image inside the
+workspace when creating an ESP32 session. It is copied per session, so guest
+writes do not alter the source and do not survive session deletion. The
+CYD-compatible SPI SD card uses SPI3 and GPIO5 software chip select. Omit the
+field to preserve existing behavior. Hardware-controlled CS, FAT mounting,
+DMA with an SD card, and Marauder are not yet verified.
+
+`node tests/sd-spi.mjs` (with the backend running) creates a temporary 64 MiB
+image and verifies SD initialization, a sector read, a write and readback
+inside an ESP-IDF guest, as well as source-image isolation.

@@ -23,6 +23,15 @@
 #include "hw/misc/espplay_internal.h"
 
 static EspplayBridgeState *espplay_singleton;
+static qemu_irq espplay_sd_cs;
+static int espplay_sd_cs_pin = -1;
+
+void espplay_sd_attach(qemu_irq cs, int pin)
+{
+    espplay_sd_cs = cs;
+    espplay_sd_cs_pin = pin;
+    qemu_set_irq(cs, 1);
+}
 
 EspplayBridgeState *espplay_bridge_get(void)
 {
@@ -53,6 +62,7 @@ void espplay_gpio_out_update(int pin, int level)
     uint8_t p[2] = { (uint8_t)pin, (uint8_t)(level ? 1 : 0) };
     espplay_send_msg(espplay_bridge_get(), ESPPLAY_MSG_GPIO_LEVEL, p, 2);
     espplay_tft_gpio_update(pin, level);
+    if (espplay_sd_cs && pin == espplay_sd_cs_pin) qemu_set_irq(espplay_sd_cs, level);
 }
 
 void espplay_gpio_mode_update(int pin, int mode, int pull)

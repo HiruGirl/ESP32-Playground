@@ -313,13 +313,19 @@ function describeExample(name: string): string {
 
 app.post("/api/sessions", (req, res) => {
   try {
-    const { chip = "esp32", firmware, elf, icount, tft } = req.body ?? {};
+    const { chip = "esp32", firmware, elf, icount, tft, sdImage } = req.body ?? {};
     if (!firmware || typeof firmware !== "string") return res.status(400).json({ error: "firmware path required" });
     const fw = resolve(firmware);
     if (!fw.startsWith(ROOT) || !existsSync(fw)) return res.status(400).json({ error: "firmware not found (must be inside workspace)" });
     if (statSync(fw).size > MAX_UPLOAD) return res.status(400).json({ error: "firmware too large" });
+    let sd: string | undefined;
+    if (sdImage !== undefined) {
+      if (chip !== "esp32" || typeof sdImage !== "string") return res.status(400).json({ error: "SPI SD images require ESP32 and a path" });
+      sd = resolve(sdImage);
+      if (!sd.startsWith(ROOT + "/") || !existsSync(sd) || !statSync(sd).isFile()) return res.status(400).json({ error: "SD image not found (must be inside workspace)" });
+    }
     const id = randomUUID().slice(0, 8);
-    const cfg: SessionConfig = { chip, firmware: fw, elf: elf && existsSync(resolve(elf)) ? resolve(elf) : undefined, icount, tft };
+    const cfg: SessionConfig = { chip, firmware: fw, elf: elf && existsSync(resolve(elf)) ? resolve(elf) : undefined, icount, tft, sdImage: sd };
     const session = new QemuSession(id, cfg, chip === "esp32c3" ? QEMU_RISCV : QEMU_BIN);
     const b = bundle(session);
     sessions.set(id, b);

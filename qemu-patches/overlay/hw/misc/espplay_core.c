@@ -633,7 +633,7 @@ void espplay_tft_configure(EspplayBridgeState *s)
     t->enabled = true;
     t->bus = s->tft_bus;
     t->dc_pin = s->tft_dc_pin;
-    t->dc_level = 1;
+    t->dc_level = 0; /* GPIO outputs reset low; tracks via espplay_tft_gpio_update */
     t->xs = t->ys = 0;
     t->xe = t->ye = TFT_PANEL_MAX - 1;
     t->cx = t->cy = 0;

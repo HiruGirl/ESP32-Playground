@@ -467,6 +467,216 @@ index f3a824cb23..17cd12be92 100644
      mc->desc = "Espressif ESP32-C3 machine";
      mc->default_cpu_type = TYPE_ESP_RISCV_CPU;
      mc->init = esp32c3_machine_init;
+diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
+index 65ca6663a0..dc37e25826 100644
+--- a/hw/ssi/esp32_spi.c
++++ b/hw/ssi/esp32_spi.c
+@@ -12,12 +12,15 @@
+ #include "qemu/log.h"
+ #include "qemu/module.h"
+ #include "sysemu/sysemu.h"
++#include "exec/address-spaces.h"
++#include "qemu/bswap.h"
+ #include "hw/hw.h"
+ #include "hw/sysbus.h"
+ #include "hw/registerfields.h"
+ #include "hw/irq.h"
+ #include "hw/qdev-properties.h"
+ #include "hw/ssi/ssi.h"
++#include "hw/misc/espplay_bridge.h"
+ #include "hw/ssi/esp32_spi.h"
+ #include "hw/misc/esp32_flash_enc.h"
+ 
+@@ -84,6 +87,9 @@ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
+     case A_SPI_W0 ... A_SPI_W0 + (ESP32_SPI_BUF_WORDS - 1) * sizeof(uint32_t):
+         r = s->data_reg[(addr - A_SPI_W0) / sizeof(uint32_t)];
+         break;
++    case 0x100: r = s->dma_conf; break;
++    case 0x104: r = s->dma_out_link; break;
++    case 0x108: r = s->dma_in_link; break;
+     case A_SPI_EXT2:
+         r = 0;
+         break;
+@@ -135,6 +141,21 @@ static void esp32_spi_write(void *opaque, hwaddr addr,
+     case A_SPI_PIN:
+         s->pin_reg = value;
+         break;
++    case 0x100:
++        s->dma_conf = value;
++        if (value & (1u << 3)) s->dma_tx_active = false;
++        if (value & (1u << 2)) s->dma_rx_active = false;
++        break;
++    case 0x104:
++        s->dma_out_link = value;
++        if (value & (1u << 28)) s->dma_tx_active = false;
++        if (value & (1u << 29)) s->dma_tx_active = true;
++        break;
++    case 0x108:
++        s->dma_in_link = value;
++        if (value & (1u << 28)) s->dma_rx_active = false;
++        if (value & (1u << 29)) s->dma_rx_active = true;
++        break;
+     case A_SPI_CMD:
+         esp32_spi_do_command(s, value);
+         break;
+@@ -158,11 +179,13 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
+     uint8_t *c_buf = (uint8_t*) buf;
+     for (int i = 0; i < bytes; ++i) {
+         uint8_t byte = 0;
+-        if (byte < tx_bytes) {
++        if (i < tx_bytes) {
+             memcpy(&byte, c_buf + i, 1);
+         }
++        /* espplay: route TX bytes to the virtual SPI slave (TFT model) */
++        espplay_spi_slave_xfer(s->bus_nr, byte);
+         uint32_t res = ssi_transfer(s->spi, byte);
+-        if (byte < rx_bytes) {
++        if (i < rx_bytes) {
+             memcpy(c_buf + i, &res, 1);
+         }
+     }
+@@ -170,13 +193,77 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
+ 
+ static void esp32_spi_cs_set(Esp32SpiState *s, int value)
+ {
++    /* espplay: transaction framing for the virtual slave (0=start) */
++    if (espplay_spi_slave_exists(s->bus_nr)) {
++        espplay_spi_slave_cs(s->bus_nr, value);
++    }
+     for (int i = 0; i < ESP32_SPI_CS_COUNT; ++i) {
+         qemu_set_irq(s->cs_gpio[i], ((s->pin_reg & (1 << i)) == 0) ? value : 1);
+     }
+ }
+ 
++/* ESP32 DMA linked-list descriptors live in the 0x3ffxxxxx region.  Each
++ * descriptor is { size:12, length:12, flags:8; buffer; next }.  Bound both
++ * the data length and number of descriptors: a malformed guest must not make
++ * the emulator follow a circular list forever. */
++#define ESPPLAY_SPI_DMA_MAX (128 * 1024)
++#define ESPPLAY_SPI_DMA_DESCRIPTORS 4096
++
++static void esp32_spi_dma_copy(uint32_t link, uint8_t *data, size_t len, bool rx)
++{
++    uint32_t desc = 0x3ff00000 | (link & 0xfffff);
++    size_t done = 0;
++    for (int i = 0; desc && done < len && i < ESPPLAY_SPI_DMA_DESCRIPTORS; i++) {
++        uint8_t raw[12];
++        cpu_physical_memory_read(desc, raw, sizeof(raw));
++        uint32_t flags = ldl_le_p(raw);
++        uint32_t buf = ldl_le_p(raw + 4);
++        uint32_t next = ldl_le_p(raw + 8);
++        size_t capacity = flags & 0xfff;
++        size_t available = rx ? capacity : (flags >> 12) & 0xfff;
++        if (!(flags & (1u << 31)) || !buf || !available || available > capacity) {
++            break;
++        }
++        size_t n = MIN(available, len - done);
++        if (rx) {
++            cpu_physical_memory_write(buf, data + done, n);
++            flags = (flags & ~(0xfffu << 12)) | ((uint32_t)n << 12);
++            flags &= ~(1u << 31);
++            if (done + n == len) flags |= 1u << 30;
++            stl_le_p(raw, flags);
++            cpu_physical_memory_write(desc, raw, 4);
++        } else {
++            cpu_physical_memory_read(buf, data + done, n);
++        }
++        done += n;
++        if (!rx && (flags & (1u << 30))) break;
++        desc = next;
++    }
++}
++
+ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
+ {
++    uint8_t *dma_data = NULL;
++    uint32_t *pio_data = t->data;
++    int bytes = MAX(t->data_tx_bytes, t->data_rx_bytes);
++    bool dma_tx = s->dma_tx_active && (s->dma_out_link & 0xfffff);
++    bool dma_rx = s->dma_rx_active && (s->dma_in_link & 0xfffff);
++    if (bytes > ESPPLAY_SPI_DMA_MAX) {
++        qemu_log_mask(LOG_GUEST_ERROR, "esp32 spi: oversized transfer\n");
++        return;
++    }
++    if (dma_tx || dma_rx) {
++        dma_data = g_malloc0(MAX(bytes, 1));
++        if (dma_tx) {
++            esp32_spi_dma_copy(s->dma_out_link, dma_data, t->data_tx_bytes, false);
++        } else if (pio_data) {
++            memcpy(dma_data, pio_data, MIN(t->data_tx_bytes, ESP32_SPI_BUF_WORDS * 4));
++        }
++        t->data = (uint32_t *)dma_data;
++    } else if (bytes > ESP32_SPI_BUF_WORDS * 4) {
++        qemu_log_mask(LOG_GUEST_ERROR, "esp32 spi: PIO transfer exceeds FIFO\n");
++        return;
++    }
+     esp32_spi_cs_set(s, 0);
+     esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
+     esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
+@@ -185,6 +272,15 @@ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
+     }
+     esp32_spi_txrx_buffer(s, t->data, t->data_tx_bytes, t->data_rx_bytes);
+     esp32_spi_cs_set(s, 1);
++    if (dma_data) {
++        if (dma_rx) {
++            esp32_spi_dma_copy(s->dma_in_link, dma_data, t->data_rx_bytes, true);
++        } else if (pio_data) {
++            memcpy(pio_data, dma_data, MIN(t->data_rx_bytes, ESP32_SPI_BUF_WORDS * 4));
++        }
++        g_free(dma_data);
++    }
++    s->dma_tx_active = s->dma_rx_active = false;
+ }
+ 
+ /* Convert one of the hardware "bitlen" registers to a byte count */
+@@ -298,7 +394,10 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+ 
+     case R_SPI_CMD_USR_MASK:
+         maybe_encrypt_data(s);
+-        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) || FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN)) {
++        /* espplay fix: only emit the command phase when the USER.COMMAND
++         * enable bit is set. Checking COMMAND_BITLEN alone sent phantom
++         * bytes (stale reset value) ahead of every pure-data transaction. */
++        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND)) {
+             t.cmd = FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE);
+             t.cmd_bytes = bitlen_to_bytes(FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN));
+         } else {
+@@ -344,10 +443,26 @@ static void esp32_spi_reset_hold(Object *obj, ResetType type)
+     s->user2_reg = FIELD_DP32(0, SPI_USER2, COMMAND_BITLEN, 4);
+     s->user2_reg = FIELD_DP32(s->user2_reg, SPI_USER2, COMMAND_VALUE, 0);
+     s->status_reg = 0;
++    s->dma_conf = s->dma_out_link = s->dma_in_link = 0;
++    s->dma_tx_active = s->dma_rx_active = false;
+ }
+ 
+ static void esp32_spi_realize(DeviceState *dev, Error **errp)
+ {
++    Esp32SpiState *s = ESP32_SPI(dev);
++    /* espplay: derive the controller index from the device name ("spi0".."spi3").
++     * instance_init is too early for the canonical path. */
++    s->bus_nr = 0;
++    const char *comp = object_get_canonical_path_component(OBJECT(s));
++    if (comp) {
++        const char *d = comp;
++        while (*d && !g_ascii_isdigit(*d)) {
++            d++;
++        }
++        if (*d) {
++            s->bus_nr = atoi(d);
++        }
++    }
+ }
+ 
+ static void esp32_spi_init(Object *obj)
+@@ -355,6 +470,8 @@ static void esp32_spi_init(Object *obj)
+     Esp32SpiState *s = ESP32_SPI(obj);
+     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+ 
++    s->bus_nr = -1; /* espplay: resolved in realize from the device name */
++
+     memory_region_init_io(&s->iomem, obj, &esp32_spi_ops, s,
+                           TYPE_ESP32_SPI, ESP32_SPI_REG_SIZE);
+     sysbus_init_mmio(sbd, &s->iomem);
 diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
 index c3cf32e030..6e2fda388c 100644
 --- a/hw/xtensa/esp32.c
@@ -552,6 +762,27 @@ index b17dc75c8d..5816693e3c 100644
      Fifo8 rx_fifo;
      Fifo8 tx_fifo;
      bool trans_ongoing;
+diff --git a/include/hw/ssi/esp32_spi.h b/include/hw/ssi/esp32_spi.h
+index ead97f8b8a..5e665b9247 100644
+--- a/include/hw/ssi/esp32_spi.h
++++ b/include/hw/ssi/esp32_spi.h
+@@ -18,6 +18,7 @@ typedef struct Esp32SpiState {
+     qemu_irq cs_gpio[ESP32_SPI_CS_COUNT];
+     int num_cs;
+     SSIBus *spi;
++    int bus_nr; /* espplay: SPI controller index (0..3) for slave dispatch */
+ 
+     uint32_t addr_reg;
+     uint32_t ctrl_reg;
+@@ -30,6 +31,8 @@ typedef struct Esp32SpiState {
+     uint32_t mosi_dlen_reg;
+     uint32_t miso_dlen_reg;
+     uint32_t pin_reg;
++    uint32_t dma_conf, dma_out_link, dma_in_link;
++    bool dma_tx_active, dma_rx_active;
+     uint32_t data_reg[ESP32_SPI_BUF_WORDS];
+ } Esp32SpiState;
+ 
 diff --git a/subprojects/slirp.wrap b/subprojects/slirp.wrap
 index f367c01da1..bdcc16aa7a 100644
 --- a/subprojects/slirp.wrap

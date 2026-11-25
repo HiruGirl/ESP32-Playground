@@ -52,6 +52,7 @@ void espplay_gpio_out_update(int pin, int level)
 {
     uint8_t p[2] = { (uint8_t)pin, (uint8_t)(level ? 1 : 0) };
     espplay_send_msg(espplay_bridge_get(), ESPPLAY_MSG_GPIO_LEVEL, p, 2);
+    espplay_tft_gpio_update(pin, level);
 }
 
 void espplay_gpio_mode_update(int pin, int mode, int pull)
@@ -337,6 +338,7 @@ static void espplay_realize(DeviceState *dev, Error **errp)
 
     espplay_singleton = s;
     espplay_hooks_init(s);
+    espplay_tft_configure(s);
     espplay_send_msg(s, ESPPLAY_MSG_HELLO, (const uint8_t[]){ 1, 0, 0, 0, s->chip_id }, 5);
 }
 
@@ -354,6 +356,10 @@ static Property espplay_properties[] = {
     DEFINE_PROP_UINT8("chip-id", EspplayBridgeState, chip_id, 0),
     DEFINE_PROP_STRING("elf", EspplayBridgeState, elf_path),
     DEFINE_PROP_UINT32("cave-addr", EspplayBridgeState, cave_addr, 0x400A0000),
+    DEFINE_PROP_INT32("tft-bus", EspplayBridgeState, tft_bus, -1),
+    DEFINE_PROP_INT32("tft-dc-pin", EspplayBridgeState, tft_dc_pin, 2),
+    DEFINE_PROP_UINT32("tft-w", EspplayBridgeState, tft_w, 240),
+    DEFINE_PROP_UINT32("tft-h", EspplayBridgeState, tft_h, 320),
     DEFINE_PROP_END_OF_LIST(),
 };
 

@@ -84,7 +84,7 @@ function bundle(session: QemuSession): SessionBundle {
     switch (m.type) {
       case MSG.UART_DATA: {
         const uart = m.payload[0] ?? 0;
-        const text = m.payload.subarray(1).toString("utf8");
+        const text = m.payload.subarray(3).toString("utf8"); // u8 uart, u16 n, bytes
         b.uart.data.push(text);
         if (b.uart.data.length > 4000) b.uart.data.splice(0, 1000);
         broadcast(session.id, { kind: "uart", uart, data: text });
@@ -127,6 +127,18 @@ function bundle(session: QemuSession): SessionBundle {
       case MSG.LCD_TEXT: {
         b.lcdText = m.payload.toString("utf8");
         broadcast(session.id, { kind: "lcd", text: b.lcdText });
+        break;
+      }
+      case MSG.TFT_FRAME: {
+        // u16 x, u16 y, u16 w, u16 h, u8 madctl, u8 colmod, u32 nbytes, u16 pad, rgb565
+        const x = m.payload.readUInt16LE(0), y = m.payload.readUInt16LE(2);
+        const w = m.payload.readUInt16LE(4), h = m.payload.readUInt16LE(6);
+        const madctl = m.payload[8], colmod = m.payload[9];
+        const data = m.payload.subarray(16);
+        broadcast(session.id, {
+          kind: "tft", x, y, w, h, madctl, colmod,
+          data: data.toString("base64"),
+        });
         break;
       }
       case MSG.ADC_READ: {
@@ -301,13 +313,13 @@ function describeExample(name: string): string {
 
 app.post("/api/sessions", (req, res) => {
   try {
-    const { chip = "esp32", firmware, elf, icount } = req.body ?? {};
+    const { chip = "esp32", firmware, elf, icount, tft } = req.body ?? {};
     if (!firmware || typeof firmware !== "string") return res.status(400).json({ error: "firmware path required" });
     const fw = resolve(firmware);
     if (!fw.startsWith(ROOT) || !existsSync(fw)) return res.status(400).json({ error: "firmware not found (must be inside workspace)" });
     if (statSync(fw).size > MAX_UPLOAD) return res.status(400).json({ error: "firmware too large" });
     const id = randomUUID().slice(0, 8);
-    const cfg: SessionConfig = { chip, firmware: fw, elf: elf && existsSync(resolve(elf)) ? resolve(elf) : undefined, icount };
+    const cfg: SessionConfig = { chip, firmware: fw, elf: elf && existsSync(resolve(elf)) ? resolve(elf) : undefined, icount, tft };
     const session = new QemuSession(id, cfg, chip === "esp32c3" ? QEMU_RISCV : QEMU_BIN);
     const b = bundle(session);
     sessions.set(id, b);

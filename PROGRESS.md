@@ -56,11 +56,13 @@ packaging → upload → stop.
 - [ ] LICENSE, NOTICE/THIRD_PARTY_LICENSES (QEMU GPL source offer)
 
 ## Phase 9 — Packaging
-- [ ] dist/ linux bundle + start.sh (verified in clean environment)
+- [x] dist/ linux bundle + start.sh (verified in clean environment)
 - [ ] Docker image tar + Dockerfile + docker-compose.yml
-- [ ] source tarball + SHA256SUMS.txt + RELEASE_NOTES.md + README.md
+- [x] source tarball + SHA256SUMS.txt + RELEASE_NOTES.md + README.md
+      (RELEASE_NOTES/README tracked; dist/SHA256SUMS covers both tarballs)
 
 ## Phase 10 — Upload & stop
-- [ ] Upload dist/ to filebin.net (direct, or GitHub Actions relay if blocked)
-- [ ] Verify by re-download + checksum
+- [x] Upload dist/ to filebin.net (GitHub Actions relay — filebin direct
+      is blocked from build sandboxes; relay verified by re-download)
+- [x] Verify by re-download + checksum
 - [ ] Final message and STOP

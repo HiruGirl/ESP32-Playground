@@ -35,7 +35,7 @@ Merged 4MB flash image (QEMU boots raw `if=mtd`), erased-flash fill 0xFF:
 | SD card (SPI)             | PARTIAL | CYD SPI3/GPIO5 card initializes and reads/writes a raw sector in an ESP-IDF guest; FAT and Marauder integration remain unverified. |
 | Touch (XPT2046)           | PARTIAL | Guest test reads raw coordinates, pipelined conversions and active-low IRQ level. GPIO edge interrupts and Marauder integration remain unverified. |
 | ESP32 SPI DMA | PARTIAL | Descriptor-driven TX demonstrated by `examples/tft_dma_test`; descriptor TX/RX chain unit tests pass. Not a complete DMA controller; RX is not yet tested with a guest peripheral. |
-| Marauder app startup      | PARTIAL / REBOOTS | Genuine initialization screen captured; Bluetooth clock assertion stops startup (see below). |
+| Marauder app startup      | BLOCKED | Stalls at `0x4009852c` (`esp_dport_access_stall_other_cpu`) right after `Using external SPI configuration...`; CPU1 never started by QEMU so the cross-core stall flag is never cleared. See docs/MARAUDER-BINARY-PATCH.md. |
 
 ## Marauder initialization capture and remaining blockers
 
@@ -46,13 +46,18 @@ rectangle messages at `ICOUNT=5` and reconstructed in the display's raw
 address coordinates. It is an initialization screen, **not** evidence of a
 working interactive UI. A 75-second run using a newly formatted 64 MiB FAT32
 image produced 207,458 TFT rectangles and 6,010 GPIO updates, but UART still
-reported `Failed to mount SD Card` followed by
-`assert failed: esp_bt_controller_init bt.c:1549 (select_src_ret && set_div_ret)`
-and software resets. The earlier raw-sector test image was not FAT formatted;
-using a FAT32 image does not by itself resolve the Marauder mount failure.
-The release binary lacks the ELF symbols required by the existing Bluetooth
-hooks. Bluetooth, Wi-Fi, SD mounting and touch have not been demonstrated in
-Marauder. Instruction timing affects progress; this is not a deterministic
+reported `Failed to mount SD Card` and then stalls before any UI, radio, SD,
+or touch code runs. Root cause (conclusive): CPU1 is never started by QEMU,
+so the cross-core stall flag in `esp_dport_access_stall_other_cpu` (PC
+`0x4009852c`) is never cleared and the watchdog cannot fire (interrupts
+masked). The BT clock assertion at `bt.c:1549` is a secondary issue that only
+matters once CPU1 is started and `esp_bt_controller_init` runs; it is addressed
+by binary function-entry patching (see docs/MARAUDER-BINARY-PATCH.md). The
+earlier raw-sector test image was not FAT formatted; using a FAT32 image does
+not by itself resolve the Marauder mount failure. The release binary lacks
+ELF symbols, so patches are applied to scratch copies (the release binary is
+never touched). Bluetooth, Wi-Fi, SD mounting and touch have not been
+demonstrated in Marauder. Instruction timing affects progress; this is not a deterministic
 success test.
 
 Set `ICOUNT=5` when running `tests/marauder-smoke.mjs` to reproduce the timing

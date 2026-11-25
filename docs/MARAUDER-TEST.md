@@ -48,8 +48,11 @@ smoke tests establish that Marauder itself works.
 The UART line `entry 0x400805e4` is the **second-stage bootloader** entry,
 not the application entry. A separate GDB-remote breakpoint trace reached the
 real app image entry `0x40083078`, the later CPU startup at `0x40146ab0`, and
-the scheduler path at `0x40098428`; it also observed the second CPU start.
-These are observations, not proof that the main task or display initialized.
+the scheduler path at `0x40098428`, the FreeRTOS `main` task at
+`0x401fe610`, Arduino `app_main` at `0x4013bee0`, and the Arduino loop task
+entering its setup call at `0x40112f34` on CPU 1. Multiple intervening
+breakpoints altered execution timing, so this does not establish normal
+progress without the debugger, nor that display initialization completed.
 A sampled post-stall PC was inside ROM eFuse code; the precise cause and the
 point at which startup stops making progress remain unknown. Earlier evidence
 showed the eFuse verify failure branch was not taken, so the ROM sample alone

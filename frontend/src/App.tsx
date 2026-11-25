@@ -1,5 +1,5 @@
 // ESP32 Playground — main app shell.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type PointerEvent } from "react";
 import { api, useSession } from "./useSession";
 import Components from "./components/Components";
 import SerialMonitor from "./components/SerialMonitor";
@@ -49,6 +49,15 @@ export default function App() {
     connect(res.id);
     setStatus(`session ${res.id} running (${chip})`);
   }, [chip, connect, cyd]);
+
+  const tftTouch = useCallback((event: PointerEvent<HTMLCanvasElement>, down: boolean) => {
+    if (!cyd || chip !== "esp32" || !data.connected) return;
+    const r = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (event.clientX - r.left) / r.width));
+    const y = Math.max(0, Math.min(1, (event.clientY - r.top) / r.height));
+    // CYD portrait calibration and XPT2046_Touchscreen rotation 0.
+    send({ kind: "touch", down, x: Math.round(240 + y * 3560), y: Math.round(4095 - (200 + x * 3500)) });
+  }, [cyd, chip, data.connected, send]);
 
   const control = useCallback(async (cmd: string) => {
     if (!selected) return;
@@ -136,8 +145,11 @@ export default function App() {
         <div className="col">
           <div className="panel">
             <h2>CYD TFT</h2>
-            <canvas ref={tftCanvas} width={240} height={320} style={{ width: "min(100%, 240px)", height: "auto", background: "#000", imageRendering: "pixelated", touchAction: "none" }} />
-            <p className="mono">ILI9341 output; touch input is not yet wired to this display.</p>
+            <canvas ref={tftCanvas} width={240} height={320} style={{ width: "min(100%, 240px)", height: "auto", background: "#000", imageRendering: "pixelated", touchAction: "none" }}
+              onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); tftTouch(e, true); }}
+              onPointerMove={e => { if (e.buttons) tftTouch(e, true); }}
+              onPointerUp={e => tftTouch(e, false)} onPointerCancel={e => tftTouch(e, false)} />
+            <p className="mono">ILI9341 output · touch uses approximate CYD portrait calibration.</p>
           </div>
           <Components data={data} send={send} />
           <WifiPanel data={data} send={send} />

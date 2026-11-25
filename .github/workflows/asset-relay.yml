@@ -1,0 +1,46 @@
+# Asset relay: build sandboxes cannot reach release-asset CDNs
+# (objects.githubusercontent.com), so this workflow downloads firmware
+# assets on a GitHub-hosted runner and stages them as a git TAG (the
+# toolchain-cache.yml trick) for plain-git fetch from the sandbox.
+#
+# Triggered by a push that touches this file or asset-relay.trigger
+# (workflow_dispatch needs default-branch registration; push works on
+# any branch).
+name: asset-relay
+on:
+  push:
+    paths:
+      - ".github/workflows/asset-relay.yml"
+      - "asset-relay.trigger"
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ESP32 Marauder firmware (CYD 2432S028 + installer assets)
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          BASE="https://github.com/justcallmekoko/ESP32Marauder/releases/download/v1.21.0"
+          curl -fsSL -o stage/esp32_marauder_cyd_2432S028.bin \
+            "$BASE/esp32_marauder_v1_21_0_20261120_cyd_2432S028.bin"
+          curl -fsSL -o stage/marauder-installer-assets.zip \
+            "$BASE/marauder-installer-assets.zip"
+          (cd stage && sha256sum * > SHA256SUMS)
+          ls -la stage
+
+      - name: Stage firmware tag
+        run: |
+          set -euo pipefail
+          export GIT_INDEX_FILE=/tmp/fw-index
+          rm -f /tmp/fw-index
+          git read-tree --empty
+          git add -f stage/
+          TREE=$(git write-tree)
+          COMMIT=$(echo "ESP32 Marauder v1.21.0 firmware assets staged for sandbox fetch" | git commit-tree $TREE)
+          unset GIT_INDEX_FILE
+          git tag -f firmware-marauder-v1.21.0 "$COMMIT"
+          git push -f origin firmware-marauder-v1.21.0

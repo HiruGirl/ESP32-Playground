@@ -33,6 +33,10 @@ void app_main(void) {
     r = cmd(8, 0x1aa, 0x87); printf("CMD8=%02x", r);
     for (int i = 0; i < 4; i++) { printf(" %02x", xfer(0xff)); }
     puts(""); end();
+    r = cmd(58, 0, 0xff); printf("CMD58_IDLE=%02x\n", r);
+    for (int i = 0; i < 4; i++) { xfer(0xff); }
+    end();
+    if (r != 1) return;
     for (int i = 0; i < 100; i++) {
         cmd(55, 0, 0xff); end(); r = cmd(41, 0x40000000, 0xff); end();
         if (r == 0) break;
@@ -40,6 +44,19 @@ void app_main(void) {
     }
     printf("ACMD41=%02x\n", r);
     if (r != 0) return;
+    r = cmd(58, 0, 0xff); printf("CMD58_READY=%02x\n", r);
+    for (int i = 0; i < 4; i++) { xfer(0xff); }
+    end();
+    if (r != 0) return;
+    r = cmd(9, 0, 0xff); uint8_t csd_token = 0xff;
+    for (int i = 0; i < 1000 && csd_token == 0xff; i++) csd_token = xfer(0xff);
+    for (int i = 0; i < 16 + 2; i++) { xfer(0xff); }
+    end();
+    printf("CMD9=%02x CSD_TOKEN=%02x\n", r, csd_token);
+    if (r != 0 || csd_token != 0xfe) return;
+    r = cmd(13, 0, 0xff); uint8_t status2 = xfer(0xff); end();
+    printf("CMD13=%02x %02x\n", r, status2);
+    if (r != 0 || status2 != 0) return;
     r = cmd(17, 0, 0xff); printf("CMD17=%02x\n", r);
     uint8_t token = 0xff;
     for (int i = 0; i < 1000 && token == 0xff; i++) token = xfer(0xff);

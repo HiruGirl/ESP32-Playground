@@ -33,6 +33,9 @@ try {
       if (text.includes('SD_SPI_WRITE_PASS')) { clearTimeout(timeout); done(); }
     });
   });
+  for (const expected of ['CMD58_IDLE=01', 'CMD58_READY=00', 'CMD9=00 CSD_TOKEN=fe', 'CMD13=00 00']) {
+    if (!text.includes(expected)) throw new Error(`missing ${expected}: ${text}`);
+  }
   if (!text.includes('SD_SPI_READ_PASS')) throw new Error('missing read pass');
   if (!readFileSync(image).subarray(0, 512).equals(sector)) throw new Error('session modified original image');
   console.log('SPI SD initialization, sector read/write/readback, and source-image isolation passed');

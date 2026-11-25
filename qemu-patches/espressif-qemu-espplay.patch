@@ -379,6 +379,55 @@ index 5f4022f0b1..86b85ade98 100644
  
      fifo8_create(&s->tx_fifo, ESP32_I2C_FIFO_LENGTH);
      fifo8_create(&s->rx_fifo, ESP32_I2C_FIFO_LENGTH);
+diff --git a/hw/misc/esp32_dport.c b/hw/misc/esp32_dport.c
+index 1bb2435f48..f2897d5dc9 100644
+--- a/hw/misc/esp32_dport.c
++++ b/hw/misc/esp32_dport.c
+@@ -27,6 +27,9 @@
+ 
+ #define ESP32_DPORT_SIZE        (DR_REG_DPORT_APB_BASE - DR_REG_DPORT_BASE)
+ 
++#define DPORT_BT_LPCK_DIV_INT  0x0d4
++#define DPORT_BT_LPCK_DIV_FRAC 0x0d8
++
+ #define MMU_RANGE_SIZE          (ESP32_CACHE_PAGES_PER_REGION * sizeof(uint32_t))
+ #define MMU_RANGE_LAST          (MMU_RANGE_SIZE - sizeof(uint32_t))
+ 
+@@ -119,6 +122,12 @@ static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
+     case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
+         r = get_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr);
+         break;
++    case DPORT_BT_LPCK_DIV_INT:
++        r = s->bt_lpclk_div_int;
++        break;
++    case DPORT_BT_LPCK_DIV_FRAC:
++        r = s->bt_lpclk_div_frac;
++        break;
+     case A_DPORT_SLAVE_SPI_CONFIG:
+         r = s->slave_spi_config_reg;
+         break;
+@@ -221,6 +230,12 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
+     case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
+         set_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr, value);
+         break;
++    case DPORT_BT_LPCK_DIV_INT:
++        s->bt_lpclk_div_int = value & 0x1fff;
++        break;
++    case DPORT_BT_LPCK_DIV_FRAC:
++        s->bt_lpclk_div_frac = value & 0x0fffffff;
++        break;
+     case A_DPORT_SLAVE_SPI_CONFIG:
+         s->slave_spi_config_reg = value;
+         qemu_set_irq(s->flash_enc_en_gpio, FIELD_EX32(value, DPORT_SLAVE_SPI_CONFIG, SLAVE_SPI_ENCRYPT_ENABLE));
+@@ -368,6 +383,8 @@ static void esp32_dport_reset_hold(Object *obj, ResetType type)
+ {
+     Esp32DportState *s = ESP32_DPORT(obj);
+ 
++    s->bt_lpclk_div_int = 0xff;
++    s->bt_lpclk_div_frac = 0x02001001;
+     s->appcpu_boot_addr = 0;
+     s->appcpu_clkgate_state = false;
+     s->appcpu_reset_state = true;
 diff --git a/hw/misc/esp32_ledc.c b/hw/misc/esp32_ledc.c
 index 9cebea9821..643a9cf0f4 100644
 --- a/hw/misc/esp32_ledc.c
@@ -515,6 +564,91 @@ index f3a824cb23..17cd12be92 100644
      mc->desc = "Espressif ESP32-C3 machine";
      mc->default_cpu_type = TYPE_ESP_RISCV_CPU;
      mc->init = esp32c3_machine_init;
+diff --git a/hw/sd/sd.c b/hw/sd/sd.c
+index f9bd03f3fd..474223b09b 100644
+--- a/hw/sd/sd.c
++++ b/hw/sd/sd.c
+@@ -1577,7 +1577,7 @@ static sd_rsp_type_t emmc_cmd_SEND_EXT_CSD(SDState *sd, SDRequest req)
+ /* CMD9 */
+ static sd_rsp_type_t spi_cmd_SEND_CSD(SDState *sd, SDRequest req)
+ {
+-    if (sd->state != sd_standby_state) {
++    if (sd->state != sd_transfer_state) {
+         return sd_invalid_state_for_cmd(sd, req);
+     }
+     return sd_cmd_to_sendingdata(sd, req, sd_req_get_address(sd, req),
+@@ -1596,7 +1596,7 @@ static sd_rsp_type_t sd_cmd_SEND_CSD(SDState *sd, SDRequest req)
+ /* CMD10 */
+ static sd_rsp_type_t spi_cmd_SEND_CID(SDState *sd, SDRequest req)
+ {
+-    if (sd->state != sd_standby_state) {
++    if (sd->state != sd_transfer_state) {
+         return sd_invalid_state_for_cmd(sd, req);
+     }
+     return sd_cmd_to_sendingdata(sd, req, sd_req_get_address(sd, req),
+@@ -1649,7 +1649,8 @@ static sd_rsp_type_t sd_cmd_SEND_STATUS(SDState *sd, SDRequest req)
+     }
+ 
+     if (sd_is_spi(sd)) {
+-        return sd_r2_s;
++        /* SSI translates the native status word into SPI R2. */
++        return sd_r1;
+     }
+ 
+     return sd_req_rca_same(sd, req) ? sd_r1 : sd_r0;
+diff --git a/hw/sd/ssi-sd.c b/hw/sd/ssi-sd.c
+index 15940515ab..5161c60226 100644
+--- a/hw/sd/ssi-sd.c
++++ b/hw/sd/ssi-sd.c
+@@ -55,6 +55,7 @@ typedef enum {
+ struct ssi_sd_state {
+     SSIPeripheral ssidev;
+     uint32_t mode;
++    bool idle;
+     int cmd;
+     uint8_t cmdarg[4];
+     uint8_t response[5];
+@@ -180,7 +181,8 @@ static uint32_t ssi_sd_transfer(SSIPeripheral *dev, uint32_t val)
+                 /* CMD8/CMD58 returns R3/R7 response */
+                 DPRINTF("Returned R3/R7\n");
+                 s->arglen = 5;
+-                s->response[0] = 1;
++                /* R1 reports SPI idle state separately from the OCR power-up bit. */
++                s->response[0] = s->idle ? 1 : 0;
+                 memcpy(&s->response[1], longresp, 4);
+             } else if (s->arglen != 4) {
+                 BADF("Unexpected response to cmd %d\n", s->cmd);
+@@ -235,6 +237,7 @@ static uint32_t ssi_sd_transfer(SSIPeripheral *dev, uint32_t val)
+                 if (status & 0xff)
+                     status |= SSI_SDR_PARAMETER_ERROR;
+                 s->response[0] = status >> 8;
++                if (s->cmd == 0 || s->cmd == 41) s->idle = (s->response[0] & 1) != 0;
+                 s->response[1] = status;
+                 DPRINTF("Card status 0x%02x\n", status);
+             }
+@@ -347,11 +350,12 @@ static int ssi_sd_post_load(void *opaque, int version_id)
+ 
+ static const VMStateDescription vmstate_ssi_sd = {
+     .name = "ssi_sd",
+-    .version_id = 7,
+-    .minimum_version_id = 7,
++    .version_id = 8,
++    .minimum_version_id = 8,
+     .post_load = ssi_sd_post_load,
+     .fields = (const VMStateField []) {
+         VMSTATE_UINT32(mode, ssi_sd_state),
++        VMSTATE_BOOL(idle, ssi_sd_state),
+         VMSTATE_INT32(cmd, ssi_sd_state),
+         VMSTATE_UINT8_ARRAY(cmdarg, ssi_sd_state, 4),
+         VMSTATE_UINT8_ARRAY(response, ssi_sd_state, 5),
+@@ -378,6 +382,7 @@ static void ssi_sd_reset(DeviceState *dev)
+     ssi_sd_state *s = SSI_SD(dev);
+ 
+     s->mode = SSI_SD_CMD;
++    s->idle = true;
+     s->cmd = 0;
+     memset(s->cmdarg, 0, sizeof(s->cmdarg));
+     memset(s->response, 0, sizeof(s->response));
 diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
 index 65ca6663a0..1f9583f465 100644
 --- a/hw/ssi/esp32_spi.c
@@ -740,7 +874,7 @@ index 5866207480..c16eb846c7 100644
      select UNIMP
      select OPENCORES_ETH
 diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
-index c3cf32e030..955f5652d0 100644
+index c3cf32e030..90dae8cbb8 100644
 --- a/hw/xtensa/esp32.c
 +++ b/hw/xtensa/esp32.c
 @@ -27,6 +27,8 @@
@@ -787,27 +921,28 @@ index c3cf32e030..955f5652d0 100644
  
      object_initialize_child(obj, "efuse", &s->efuse, TYPE_ESP32_EFUSE);
  
-@@ -710,6 +718,7 @@ struct Esp32MachineState {
+@@ -710,6 +718,8 @@ struct Esp32MachineState {
  
      Esp32SocState esp32;
      DeviceState *flash_dev;
 +    bool sd_spi;
++    bool sd_spi_hspi;
  };
  #define TYPE_ESP32_MACHINE MACHINE_TYPE_NAME("esp32")
  
-@@ -790,11 +799,20 @@ static void esp32_machine_init_openeth(Esp32SocState *ss)
+@@ -790,11 +800,20 @@ static void esp32_machine_init_openeth(Esp32SocState *ss)
      memory_region_add_subregion(sys_mem, desc_base, sysbus_mmio_get_region(sbd, 1));
  }
  
 -static void esp32_machine_init_sd(Esp32SocState *ss)
-+static void esp32_machine_init_sd(Esp32SocState *ss, bool spi)
++static void esp32_machine_init_sd(Esp32SocState *ss, bool spi, bool hspi)
  {
      DriveInfo *dinfo = drive_get(IF_SD, 0, 0);
      if (dinfo) {
          DeviceState *card;
 +        if (spi) {
-+            /* CYD micro: VSPI (SPI3), software CS on GPIO5. */
-+            DeviceState *adapter = ssi_create_peripheral(ss->spi[3].spi, "ssi-sd");
++            /* Software CS on GPIO5; choose the controller used by the guest. */
++            DeviceState *adapter = ssi_create_peripheral(ss->spi[hspi ? 2 : 3].spi, "ssi-sd");
 +            espplay_sd_attach(qdev_get_gpio_in_named(adapter, SSI_GPIO_CS, 0), 5);
 +            card = qdev_new(TYPE_SD_CARD_SPI);
 +            qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(dinfo), &error_fatal);
@@ -817,16 +952,16 @@ index c3cf32e030..955f5652d0 100644
  
          card = qdev_new(TYPE_SD_CARD);
          qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(dinfo),
-@@ -845,7 +863,7 @@ static void esp32_machine_init(MachineState *machine)
+@@ -845,7 +864,7 @@ static void esp32_machine_init(MachineState *machine)
  
      esp32_machine_init_openeth(ss);
  
 -    esp32_machine_init_sd(ss);
-+    esp32_machine_init_sd(ss, ms->sd_spi);
++    esp32_machine_init_sd(ss, ms->sd_spi, ms->sd_spi_hspi);
  
      /* Need MMU initialized prior to ELF loading,
       * so that ELF gets loaded into virtual addresses
-@@ -936,10 +954,23 @@ static ram_addr_t esp32_fixup_ram_size(ram_addr_t requested_size)
+@@ -936,10 +955,34 @@ static ram_addr_t esp32_fixup_ram_size(ram_addr_t requested_size)
      return size;
  }
  
@@ -841,12 +976,23 @@ index c3cf32e030..955f5652d0 100644
 +}
 +
  /* Initialize machine type */
++static bool esp32_machine_get_sd_spi_hspi(Object *obj, Error **errp)
++{
++    return ESP32_MACHINE(obj)->sd_spi_hspi;
++}
++
++static void esp32_machine_set_sd_spi_hspi(Object *obj, bool value, Error **errp)
++{
++    ESP32_MACHINE(obj)->sd_spi_hspi = value;
++}
++
  static void esp32_machine_class_init(ObjectClass *oc, void *data)
  {
      MachineClass *mc = MACHINE_CLASS(oc);
 +    extern void machine_class_allow_dynamic_sysbus_dev(MachineClass *mc, const char *type);
 +    machine_class_allow_dynamic_sysbus_dev(mc, "espplay.bridge");
 +    object_class_property_add_bool(oc, "sd-spi", esp32_machine_get_sd_spi, esp32_machine_set_sd_spi);
++    object_class_property_add_bool(oc, "sd-spi-hspi", esp32_machine_get_sd_spi_hspi, esp32_machine_set_sd_spi_hspi);
      mc->desc = "Espressif ESP32 machine";
      mc->init = esp32_machine_init;
      mc->max_cpus = 2;
@@ -904,6 +1050,19 @@ index b17dc75c8d..5816693e3c 100644
      Fifo8 rx_fifo;
      Fifo8 tx_fifo;
      bool trans_ongoing;
+diff --git a/include/hw/misc/esp32_dport.h b/include/hw/misc/esp32_dport.h
+index 3dfc0ab4ce..b4517ff8f7 100644
+--- a/include/hw/misc/esp32_dport.h
++++ b/include/hw/misc/esp32_dport.h
+@@ -74,6 +74,8 @@ typedef struct Esp32DportState {
+     uint32_t cpuperiod_sel;
+     uint32_t cache_ill_trap_en_reg;
+     uint32_t slave_spi_config_reg;
++    uint32_t bt_lpclk_div_int;
++    uint32_t bt_lpclk_div_frac;
+ 
+ } Esp32DportState;
+ 
 diff --git a/include/hw/ssi/esp32_spi.h b/include/hw/ssi/esp32_spi.h
 index ead97f8b8a..5e665b9247 100644
 --- a/include/hw/ssi/esp32_spi.h
@@ -958,65 +1117,3 @@ index 1c818ff682..318c64fcb8 100644
  }
  
  #ifdef CONFIG_LINUX
-diff --git a/hw/misc/esp32_dport.c b/hw/misc/esp32_dport.c
-index 1bb2435f48..f2897d5dc9 100644
---- a/hw/misc/esp32_dport.c
-+++ b/hw/misc/esp32_dport.c
-@@ -27,6 +27,9 @@
- 
- #define ESP32_DPORT_SIZE        (DR_REG_DPORT_APB_BASE - DR_REG_DPORT_BASE)
- 
-+#define DPORT_BT_LPCK_DIV_INT  0x0d4
-+#define DPORT_BT_LPCK_DIV_FRAC 0x0d8
-+
- #define MMU_RANGE_SIZE          (ESP32_CACHE_PAGES_PER_REGION * sizeof(uint32_t))
- #define MMU_RANGE_LAST          (MMU_RANGE_SIZE - sizeof(uint32_t))
- 
-@@ -119,6 +122,12 @@ static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
-     case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
-         r = get_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr);
-         break;
-+    case DPORT_BT_LPCK_DIV_INT:
-+        r = s->bt_lpclk_div_int;
-+        break;
-+    case DPORT_BT_LPCK_DIV_FRAC:
-+        r = s->bt_lpclk_div_frac;
-+        break;
-     case A_DPORT_SLAVE_SPI_CONFIG:
-         r = s->slave_spi_config_reg;
-         break;
-@@ -221,6 +230,12 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
-     case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
-         set_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr, value);
-         break;
-+    case DPORT_BT_LPCK_DIV_INT:
-+        s->bt_lpclk_div_int = value & 0x1fff;
-+        break;
-+    case DPORT_BT_LPCK_DIV_FRAC:
-+        s->bt_lpclk_div_frac = value & 0x0fffffff;
-+        break;
-     case A_DPORT_SLAVE_SPI_CONFIG:
-         s->slave_spi_config_reg = value;
-         qemu_set_irq(s->flash_enc_en_gpio, FIELD_EX32(value, DPORT_SLAVE_SPI_CONFIG, SLAVE_SPI_ENCRYPT_ENABLE));
-@@ -368,6 +383,8 @@ static void esp32_dport_reset_hold(Object *obj, ResetType type)
- {
-     Esp32DportState *s = ESP32_DPORT(obj);
- 
-+    s->bt_lpclk_div_int = 0xff;
-+    s->bt_lpclk_div_frac = 0x02001001;
-     s->appcpu_boot_addr = 0;
-     s->appcpu_clkgate_state = false;
-     s->appcpu_reset_state = true;
-diff --git a/include/hw/misc/esp32_dport.h b/include/hw/misc/esp32_dport.h
-index 3dfc0ab4ce..b4517ff8f7 100644
---- a/include/hw/misc/esp32_dport.h
-+++ b/include/hw/misc/esp32_dport.h
-@@ -74,6 +74,8 @@ typedef struct Esp32DportState {
-     uint32_t cpuperiod_sel;
-     uint32_t cache_ill_trap_en_reg;
-     uint32_t slave_spi_config_reg;
-+    uint32_t bt_lpclk_div_int;
-+    uint32_t bt_lpclk_div_frac;
- 
- } Esp32DportState;
- 

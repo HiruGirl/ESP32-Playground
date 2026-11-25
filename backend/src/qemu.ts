@@ -14,6 +14,7 @@ export interface SessionConfig {
   icount?: number;
   touch?: { bus: number; csPin?: number; irqPin?: number };
   sdImage?: string; // optional CYD SPI SD image; copied per session
+  sdBus?: 2 | 3; // QEMU SPI controller, default 3
   flashSize?: string; // e.g. "2MB"
   tft?: { bus: number; dcPin?: number; w?: number; h?: number }; // virtual SPI LCD
 }
@@ -77,7 +78,7 @@ export class QemuSession extends EventEmitter {
     this.port = port;
     const machine = this.cfg.chip;
     const args = [
-      "-machine", machine + (sd ? ",sd-spi=on" : ""),
+      "-machine", machine + (sd ? ",sd-spi=on" + (this.cfg.sdBus === 2 ? ",sd-spi-hspi=on" : "") : ""),
       "-display", "none",
       "-serial", "none",
       "-drive", `file=${flash},if=mtd,format=raw`,

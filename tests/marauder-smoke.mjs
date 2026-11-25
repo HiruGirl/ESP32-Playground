@@ -5,7 +5,7 @@ const WebSocket = createRequire(resolve('backend/package.json'))('ws');
 if (!process.argv[2]) throw new Error('usage: node tests/marauder-smoke.mjs <merged flash image> [SD image] [seconds]');
 const base = process.env.ESPPLAY_URL ?? 'http://127.0.0.1:8760';
 const payload = { chip: 'esp32', firmware: resolve(process.argv[2]), icount: Number(process.env.ICOUNT ?? 3),
-  tft: { bus: 2, dcPin: 2, w: 240, h: 320 }, touch: { bus: 3, csPin: 33, irqPin: 36 } };
+  sdBus: 2, tft: { bus: 2, dcPin: 2, w: 240, h: 320 }, touch: { bus: 3, csPin: 33, irqPin: 36 } };
 if (process.argv[3] && process.argv[3] !== '-') payload.sdImage = resolve(process.argv[3]);
 const response = await fetch(`${base}/api/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
 const { id, error } = await response.json();

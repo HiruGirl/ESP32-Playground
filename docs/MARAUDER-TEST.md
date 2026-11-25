@@ -116,9 +116,12 @@ still needs a successful startup and an integrated SD/touch test.
 Pass `sdImage` with an existing power-of-two-sized raw SD image inside the
 workspace when creating an ESP32 session. It is copied per session, so guest
 writes do not alter the source and do not survive session deletion. The
-CYD-compatible SPI SD card uses SPI3 and GPIO5 software chip select. Omit the
-field to preserve existing behavior. Hardware-controlled CS, FAT mounting,
-DMA with an SD card, and Marauder are not yet verified.
+SPI SD card uses GPIO5 software chip select. The default is SPI3; pass
+`sdBus: 2` for the v1.21.0 CYD Marauder binary, whose SD traffic was observed
+on SPI2. Although the board pins are SCK18/MISO19/MOSI23, the GPIO matrix
+means pin numbers alone do not determine the controller. Omit the field to
+preserve existing behavior. Hardware-controlled CS and DMA with an SD card
+are not yet verified.
 
 `node tests/sd-spi.mjs` (with the backend running) creates a temporary 64 MiB
 image and verifies SD initialization, a sector read, a write and readback
@@ -152,3 +155,21 @@ With this change the previous clock assertion did not recur during an
 failed to mount. The complete captured serial log is
 [`evidence/marauder-clock-registers-uart.txt`](evidence/marauder-clock-registers-uart.txt).
 This is progress past one assertion, not a successful boot or Bluetooth test.
+
+## Marauder SD investigation
+
+The CYD source defines CS5, SCK18, MISO19 and MOSI23. Instrumented QEMU
+showed the release firmware issuing SPI transfers on controller 2 while CS5
+was low; attaching the card only to controller 3 left reads returning zero.
+With `sdBus: 2`, CMD0, CMD8 and ACMD41 reached the card. Three QEMU SD SPI
+issues then blocked Arduino's driver: CMD58 returned idle after ACMD41,
+CMD9 rejected the transfer state, and CMD13 returned the 16-byte CSD instead
+of card status. The patch addresses those cases. The expanded SD guest test
+verifies CMD58 both before and after initialization, CMD9 and CMD13, then
+sector read/write/readback on controller 3.
+
+With an experimental Bluetooth bypass and a 64 MiB FAT32 image, an
+instrumented Marauder run issued CMD17 and CMD24 after initialization; the
+[trace excerpt](evidence/marauder-sd-trace.txt) records the exchanges. This
+does not yet establish a named file readback or a stable interactive session,
+and must not be treated as full Marauder SD integration.

@@ -59,7 +59,7 @@ if [ "${1:-}" = "--one" ]; then
 fi
 
 for name in blink button_led pot_servo oled_hello bme280_reader neopixel_rainbow \
-            tft_ili9341 wifi_scan wifi_http_client wifi_webserver_led ble_uart_echo ble_notify \
+            tft_ili9341 tft_dma_test wifi_scan wifi_http_client wifi_webserver_led ble_uart_echo ble_notify \
             mqtt_publisher arduino_blink arduino_wifi_led; do
   build_one "$name" esp32 || true
 done

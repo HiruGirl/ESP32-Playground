@@ -34,7 +34,7 @@ Merged 4MB flash image (QEMU boots raw `if=mtd`), erased-flash fill 0xFF:
 | WiFi / BLE / I2C / ADC / buttons / sensors | WORKS (e2e 4/4) | see docs/TESTING.md |
 | SD card (SPI)             | NOT MODELED | no SD/SDMMC device in the espplay bridge |
 | Touch (XPT2046)           | NOT MODELED | no input device model |
-| SPI DMA (GDMA)            | NOT MODELED | DMA transactions deliver zero bytes; drivers must use PIO (`dma_chan = 0`) |
+| ESP32 SPI DMA | PARTIAL | Descriptor-driven TX demonstrated by `examples/tft_dma_test`; descriptor TX/RX chain unit tests pass. Not a complete DMA controller; RX is not yet tested with a guest peripheral. |
 | Marauder app startup      | HANGS | see below |
 
 ## Marauder boot hang (documented limitation)
@@ -73,3 +73,17 @@ call chain from the app entry to the verify loop.
 4. **TFT model new:** ILI9341/ST7789 command parser (CASET/RASET/RAMWR/
    MADCTL/COLMOD) with DC-pin classification via the GPIO out path and
    dirty-rect `ESPPLAY_MSG_TFT_FRAME` (0x13) frames on CS deassert.
+
+## ESP32 SPI DMA (experimental)
+
+The ESP32 SPI model now handles DMA in/out link registers and follows guest
+linked descriptors for data transfers. `examples/tft_dma_test` drives the
+ILI9341 demo with ESP-IDF `spi_bus_initialize(..., 1)`; a QEMU run produced
+5,735 TFT updates and the color bars/checkerboard/text image. The descriptor
+walker also has host tests (`python3 tests/test_spi_dma.py`) covering chained
+TX and RX, partial RX, ownership, and malformed descriptors.
+
+This is not full hardware emulation: DMA interrupts/status and channel
+arbitration are not implemented, and RX has not been verified end-to-end
+against a guest peripheral. Circular/oversized chains are bounded. Marauder
+still needs a successful startup and an integrated SD/touch test.

@@ -1,5 +1,6 @@
 // Session state + WebSocket bridge hook.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { paintTftFrame } from "./tft";
 
 export interface WifiState {
   scanning: boolean;
@@ -52,6 +53,9 @@ export function useSession() {
   const [data, setData] = useState<SessionData>(initial);
   const ws = useRef<WebSocket | null>(null);
   const sid = useRef<string | null>(null);
+  const tftCanvas = useRef<HTMLCanvasElement | null>(null);
+  const tftPixels = useRef<Uint8ClampedArray>(new Uint8ClampedArray(240 * 320 * 4));
+  const tftScheduled = useRef(false);
 
   const send = useCallback((msg: unknown) => {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(msg));
@@ -59,6 +63,8 @@ export function useSession() {
 
   const connect = useCallback((id: string) => {
     sid.current = id;
+    tftPixels.current.fill(0);
+    tftCanvas.current?.getContext("2d")?.clearRect(0, 0, 240, 320);
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const sock = new WebSocket(`${proto}://${location.host}/ws?session=${id}`);
     ws.current = sock;
@@ -66,6 +72,18 @@ export function useSession() {
     sock.onclose = () => setData((d) => ({ ...d, connected: false }));
     sock.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
+      if (m.kind === "tft") {
+        paintTftFrame(tftPixels.current, m);
+        if (!tftScheduled.current) {
+          tftScheduled.current = true;
+          requestAnimationFrame(() => {
+            tftScheduled.current = false;
+            const ctx = tftCanvas.current?.getContext("2d");
+            if (ctx) ctx.putImageData(new ImageData(new Uint8ClampedArray(tftPixels.current), 240, 320), 0, 0);
+          });
+        }
+        return;
+      }
       setData((d) => {
         switch (m.kind) {
           case "uart":
@@ -102,7 +120,7 @@ export function useSession() {
   }, []);
 
   useEffect(() => () => { ws.current?.close(); }, []);
-  return { data, send, connect };
+  return { data, send, connect, tftCanvas };
 }
 
 export async function api(path: string, body?: unknown, method = "POST") {

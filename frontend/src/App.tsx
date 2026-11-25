@@ -17,8 +17,9 @@ interface Example {
 }
 
 export default function App() {
-  const { data, send, connect } = useSession();
+  const { data, send, connect, tftCanvas } = useSession();
   const [examples, setExamples] = useState<Example[]>([]);
+  const [cyd, setCyd] = useState(true);
   const [chip, setChip] = useState("esp32");
   const [selected, setSelected] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -42,12 +43,12 @@ export default function App() {
     setStatus("starting session…");
     const fw = ex?.firmware;
     const elf = ex?.elf ?? undefined;
-    const res = await api("/api/sessions", { chip, firmware: fw, elf });
+    const res = await api("/api/sessions", { chip, firmware: fw, elf, ...(chip === "esp32" && cyd ? { tft: { bus: 2, dcPin: 2, w: 240, h: 320 }, touch: { bus: 3, csPin: 33, irqPin: 36 } } : {}) });
     if (res.error) { setStatus(`error: ${res.error}`); return; }
     setSelected(res.id);
     connect(res.id);
     setStatus(`session ${res.id} running (${chip})`);
-  }, [chip, connect]);
+  }, [chip, connect, cyd]);
 
   const control = useCallback(async (cmd: string) => {
     if (!selected) return;
@@ -91,6 +92,9 @@ export default function App() {
       <div className="main">
         <div className="col">
           <div className="panel">
+            <label><input type="checkbox" checked={cyd} onChange={e => setCyd(e.target.checked)} /> CYD TFT and touch (ESP32)</label>
+          </div>
+          <div className="panel">
             <h2>Examples</h2>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
               {examples.map((ex) => (
@@ -118,7 +122,7 @@ export default function App() {
                   method: "POST", body: file,
                 }).then((r) => r.json());
                 if (res.path) {
-                  const s = await api("/api/sessions", { chip, firmware: res.path });
+                  const s = await api("/api/sessions", { chip, firmware: res.path, ...(chip === "esp32" && cyd ? { tft: { bus: 2, dcPin: 2, w: 240, h: 320 }, touch: { bus: 3, csPin: 33, irqPin: 36 } } : {}) });
                   if (!s.error) { setSelected(s.id); connect(s.id); setStatus("custom firmware running"); }
                   else setStatus(`error: ${s.error}`);
                 }
@@ -130,6 +134,11 @@ export default function App() {
           <LogicAnalyzer data={data} sessionId={data.id} />
         </div>
         <div className="col">
+          <div className="panel">
+            <h2>CYD TFT</h2>
+            <canvas ref={tftCanvas} width={240} height={320} style={{ width: "min(100%, 240px)", height: "auto", background: "#000", imageRendering: "pixelated", touchAction: "none" }} />
+            <p className="mono">ILI9341 output; touch input is not yet wired to this display.</p>
+          </div>
           <Components data={data} send={send} />
           <WifiPanel data={data} send={send} />
         </div>

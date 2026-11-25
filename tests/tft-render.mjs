@@ -1,0 +1,24 @@
+// Test the same renderer used by the browser without requiring a browser.
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
+const esbuild = createRequire(resolve('backend/package.json'))('esbuild');
+const { outputFiles } = await esbuild.build({ entryPoints: ['frontend/src/tft.ts'], bundle: true, format: 'esm', platform: 'node', write: false });
+const { paintTftFrame } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`);
+const pixel = (a, x, y, w) => [...a.slice((y*w+x)*4, (y*w+x)*4+4)];
+const pixels = new Uint8ClampedArray(4*3*4);
+const base = { x: 0, y: 0, w: 2, h: 1, madctl: 0, colmod: 0x55, data: Buffer.from([0xf8,0,0x07,0xe0]).toString('base64') };
+paintTftFrame(pixels, base, 4, 3);
+assert.deepEqual(pixel(pixels, 0, 0, 4), [255,0,0,255]);
+assert.deepEqual(pixel(pixels, 1, 0, 4), [0,255,0,255]);
+pixels.fill(0);
+paintTftFrame(pixels, { ...base, madctl: 0x60 }, 4, 3);
+assert.deepEqual(pixel(pixels, 3, 0, 4), [255,0,0,255]);
+assert.deepEqual(pixel(pixels, 3, 1, 4), [0,255,0,255]);
+pixels.fill(0);
+paintTftFrame(pixels, { ...base, madctl: 0x08 }, 4, 3);
+assert.deepEqual(pixel(pixels, 0, 0, 4), [0,0,255,255]);
+const copy = pixels.slice();
+paintTftFrame(pixels, { ...base, data: '' }, 4, 3);
+assert.deepEqual(pixels, copy);
+console.log('TFT RGB565 rendering, orientation, BGR and malformed-frame tests passed');

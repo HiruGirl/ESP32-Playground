@@ -51,4 +51,11 @@ frames on the chardev socket.
 
 `.github/workflows/` contains the toolchain-cache relay used by the build
 sandbox. The release flow (see [RELEASE_NOTES.md](RELEASE_NOTES.md)) packages
-`dist/` tarballs and uploads them through a GitHub Actions filebin relay.
+`dist/` tarballs (`scripts/build-dist.sh`) and uploads them through the
+GitHub Actions filebin relay: stage `dist/` in a `release-dist-*` tag
+(orphan tree) and push the tag — `.github/workflows/filebin-relay.yml`
+uploads the files to filebin and verifies them by re-download + `cmp`:
+
+    bash scripts/build-dist.sh            # dist/ + SHA256SUMS
+    git tag release-dist-v1.0.0 <staged>  # tree with dist/ + the workflow
+    git push origin release-dist-v1.0.0   # triggers the relay

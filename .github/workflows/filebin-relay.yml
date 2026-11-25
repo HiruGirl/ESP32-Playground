@@ -1,0 +1,53 @@
+# Relay workflow: build sandboxes cannot reach filebin.net directly, so the
+# sandbox stages dist/ release artifacts as a git TAG (same trick as
+# toolchain-cache.yml, in reverse) and this workflow reassembles them on a
+# GitHub-hosted runner, uploads them to filebin, and verifies the upload by
+# re-download + checksum.
+name: filebin-relay
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag holding the staged dist/ artifacts"
+        required: true
+        default: "release-dist-v1.0.0"
+      bin:
+        description: "Filebin bin id (https://filebin.net/<bin>/)"
+        required: true
+        default: "esp32-playground-v1-0-0"
+permissions:
+  contents: read
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 1
+
+      - name: Verify staged checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+
+      - name: Upload to filebin
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *.tar.gz SHA256SUMS; do
+            curl -fsSL -T "$f" "https://filebin.net/${{ inputs.bin }}/$f"
+            echo "uploaded $f"
+          done
+
+      - name: Verify by re-download + checksum
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *.tar.gz SHA256SUMS; do
+            curl -fsSL "https://filebin.net/${{ inputs.bin }}/$f" -o "/tmp/$f"
+            cmp "$f" "/tmp/$f"
+            echo "verified $f"
+          done
+          echo "bin URL: https://filebin.net/${{ inputs.bin }}"

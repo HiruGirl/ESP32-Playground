@@ -33,6 +33,11 @@ jobs:
           ls -la stage
 
       - name: Stage firmware tag
+        env:
+          GIT_AUTHOR_NAME: esp32-playground-ci
+          GIT_AUTHOR_EMAIL: ci@esp32-playground.local
+          GIT_COMMITTER_NAME: esp32-playground-ci
+          GIT_COMMITTER_EMAIL: ci@esp32-playground.local
         run: |
           set -euo pipefail
           export GIT_INDEX_FILE=/tmp/fw-index

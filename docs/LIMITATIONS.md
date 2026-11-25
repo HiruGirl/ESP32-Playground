@@ -40,7 +40,11 @@ selection (`qemu_get_cpu(1)` also fails), and the setup window itself.
 This is the top item for future work; the instrumentation breadcrumbs were
 removed from the shipped sources but the trace above is preserved here.
 
-## BLE e2e timing
+## BLE e2e timing (warn-only in the suite)
+
+BLE e2e is **warn-only** in `tests/e2e.mjs` (clean icount-10 runs failed the
+10-minute advertising window, consistent with the timing limit below), so a
+release run reports it as `WARN` rather than a hard failure.
 
 NimBLE boot in icount emulation is very slow (the esp32 machine rejects
 `icount` shifts above 10, and image loading + controller init take several

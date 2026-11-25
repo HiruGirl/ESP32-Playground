@@ -10,9 +10,9 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/misc/espplay_internal.h"
-#if defined(CONFIG_TARGET_XTENSA)
+#if defined(TARGET_XTENSA)
 #include "target/xtensa/cpu.h"
-#elif defined(CONFIG_TARGET_RISCV32)
+#elif defined(TARGET_RISCV)
 #include "target/riscv/cpu.h"
 #endif
 

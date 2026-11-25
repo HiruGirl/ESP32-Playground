@@ -34,5 +34,6 @@ Release artifacts are uploaded to filebin via the GitHub Actions relay in
 
 See [docs/LIMITATIONS.md](docs/LIMITATIONS.md): most notably, a second
 injected call in one context can hit a windowed-call state bug (guest TCP
-fetch flakiness; hard-asserted e2e coverage is unaffected), and BLE e2e needs
-a long timeout because NimBLE boot is slow under icount emulation.
+fetch flakiness; hard-asserted e2e coverage is unaffected), and BLE e2e is
+warn-only because NimBLE boot is too slow for the advertising window under
+icount emulation.

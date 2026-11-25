@@ -15,9 +15,9 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/misc/espplay_internal.h"
-#if defined(CONFIG_TARGET_XTENSA)
+#if defined(TARGET_XTENSA)
 #include "target/xtensa/cpu.h"
-#elif defined(CONFIG_TARGET_RISCV32)
+#elif defined(TARGET_RISCV)
 #include "target/riscv/cpu.h"
 #endif
 
@@ -93,10 +93,10 @@ static bool ev_inflight;
 
 static uint32_t wifi_get_sp(CPUState *cpu)
 {
-#if defined(CONFIG_TARGET_XTENSA)
-    return ((CPUXtensaState *)cpu->env_ptr)->regs[1];
-#elif defined(CONFIG_TARGET_RISCV32)
-    return ((CPURISCVState *)cpu->env_ptr)->gpr[2];
+#if defined(TARGET_XTENSA)
+    return ((CPUXtensaState *)cpu_env(cpu))->regs[1];
+#elif defined(TARGET_RISCV)
+    return ((CPURISCVState *)cpu_env(cpu))->gpr[2];
 #else
     return 0;
 #endif

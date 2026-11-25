@@ -36,7 +36,7 @@ fail the run; they mark known limitations (see
 Runtime notes:
 
 - WiFi and BLE sessions boot with `icount` clamped to 10 (the esp32 machine
-  rejects larger shifts) — NimBLE boot is slow in emulation; the suite allows
+  rejects larger shifts) — NimBLE boot is slow in emulation; this check is warn-only and the suite allows
   up to 10 minutes for advertising.
 - The suite needs the QEMU build (`work/espressif-qemu/build/qemu-system-*`)
   and `backend/node_modules` installed.

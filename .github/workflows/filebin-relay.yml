@@ -3,8 +3,15 @@
 # toolchain-cache.yml, in reverse) and this workflow reassembles them on a
 # GitHub-hosted runner, uploads them to filebin, and verifies the upload by
 # re-download + checksum.
+#
+# Trigger: push of a `release-dist-*` tag whose tree holds dist/ (and this
+# workflow file), or manual workflow_dispatch. Inputs fall back to the tag
+# name (release-dist-v1.0.0 → bin esp32-playground-v1-0-0).
 name: filebin-relay
 on:
+  push:
+    tags:
+      - "release-dist-*"
   workflow_dispatch:
     inputs:
       tag:
@@ -21,9 +28,21 @@ jobs:
   relay:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve tag and bin id
+        id: r
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          BIN="${{ inputs.bin }}"
+          if [ -z "$BIN" ]; then
+            BIN="esp32-playground-$(echo "${TAG#release-dist-}" | tr '.' '-')"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "bin=$BIN" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ steps.r.outputs.tag }}
           fetch-depth: 1
 
       - name: Verify staged checksums
@@ -37,7 +56,7 @@ jobs:
           set -euo pipefail
           cd dist
           for f in *.tar.gz SHA256SUMS; do
-            curl -fsSL -T "$f" "https://filebin.net/${{ inputs.bin }}/$f"
+            curl -fsSL -T "$f" "https://filebin.net/${{ steps.r.outputs.bin }}/$f"
             echo "uploaded $f"
           done
 
@@ -46,8 +65,8 @@ jobs:
           set -euo pipefail
           cd dist
           for f in *.tar.gz SHA256SUMS; do
-            curl -fsSL "https://filebin.net/${{ inputs.bin }}/$f" -o "/tmp/$f"
+            curl -fsSL "https://filebin.net/${{ steps.r.outputs.bin }}/$f" -o "/tmp/$f"
             cmp "$f" "/tmp/$f"
             echo "verified $f"
           done
-          echo "bin URL: https://filebin.net/${{ inputs.bin }}"
+          echo "bin URL: https://filebin.net/${{ steps.r.outputs.bin }}"

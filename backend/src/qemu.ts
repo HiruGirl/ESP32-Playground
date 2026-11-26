@@ -17,6 +17,9 @@ export interface SessionConfig {
   sdBus?: 2 | 3; // QEMU SPI controller, default 3
   flashSize?: string; // e.g. "2MB"
   tft?: { bus: number; dcPin?: number; w?: number; h?: number }; // virtual SPI LCD
+  efuseImage?: string; // optional eFuse image; copied per session (required
+                       // by ROM for Marauder to get past "Using external SPI
+                       // configuration...")
 }
 
 export interface SessionInfo {
@@ -73,6 +76,8 @@ export class QemuSession extends EventEmitter {
 
     const sd = this.cfg.sdImage ? join(this.tmp, "sd.img") : undefined;
     if (sd && this.cfg.sdImage) copyFileSync(this.cfg.sdImage, sd);
+    const efuse = this.cfg.efuseImage ? join(this.tmp, "efuse.bin") : undefined;
+    if (efuse && this.cfg.efuseImage) copyFileSync(this.cfg.efuseImage, efuse);
 
     const port = await this.listenBridge();
     this.port = port;
@@ -83,6 +88,10 @@ export class QemuSession extends EventEmitter {
       "-serial", "none",
       "-drive", `file=${flash},if=mtd,format=raw`,
       ...(sd ? ["-drive", `file=${sd},if=sd,format=raw`] : []),
+      ...(efuse ? [
+        "-drive", `file=${efuse},if=none,format=raw,id=efuse`,
+        "-global", "driver=nvram.esp32.efuse,property=drive,value=efuse",
+      ] : []),
       "-icount", String(Math.max(1, Math.min(this.cfg.icount ?? 3, 10))), // QEMU esp32 icount shift max = 10
       "-chardev", `socket,id=espsock,host=127.0.0.1,port=${port},server=off`,
       "-netdev", "user,id=net0",

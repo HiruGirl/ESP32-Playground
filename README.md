@@ -75,25 +75,19 @@ ESP-IDF toolchain is needed to try the playground. To rebuild examples, see
 
 ## Chip Coverage Support Matrix
 
-| Chip | Architecture | QEMU Machine | Per-CPU Reset | eFuse Drive | SD Card | TFT | Touch | Radio Shim | Examples |
-|------|-------------|--------------|---------------|-------------|---------|-----|-------|------------|----------|
-| ESP32 | Xtensa | `esp32` | ✅ CPU0+CPU1 | ✅ | ✅ (spi bus 2/3) | ✅ (spi bus 2) | ✅ (spi bus 3) | ✅ tiered | blink, ble_notify, ble_uart_echo, arduino_wifi_led, ... |
-| ESP32-S3 | Xtensa | `esp32s3` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
-| ESP32-C3 | RISC-V | `esp32c3` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
-| ESP32-C5 | RISC-V | `esp32c5` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
-| ESP32-C6 | RISC-V | `esp32c6` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
-| ESP32-C61 | RISC-V | `esp32c61` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
-| ESP32-H2 | RISC-V | `esp32h2` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
-| ESP32-H4 | RISC-V | `esp32h4` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
-| ESP32-P4 | RISC-V | `esp32p4` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| Chip | Architecture | QEMU Machine | Baseline Booted | Per-CPU Reset | eFuse Drive | Radio Shim | Notes |
+|------|-------------|--------------|-----------------|---------------|-------------|------------|-------|
+| ESP32 | Xtensa | `esp32` | ✅ blink, ble_notify | ✅ CPU0+CPU1 | ✅ (all-zeros image) | ✅ tiered | Only chip with verified baseline boot |
 
-Legend: ✅ fully supported, ⚠️ QEMU machine exists but no per-CPU reset fix or board-level peripherals, ❌ not supported.
+Legend: ✅ verified working, — not tested.
 
-Per-CPU reset fix (CPU0+CPU1 starting from ROM reset vector 0x40000400, stall gated on DPORT bits) is implemented for ESP32 and exported as patches in `qemu-patches/` pinned to upstream commit `1b75d0fd51`.
+Only ESP32 has had its baseline example actually booted through QEMU. All other chips (ESP32-S3, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, ESP32-H4, ESP32-P4) have QEMU machines available but are **untested** — no baseline example has been run to confirm boot. Marking them as supported would require a boot log, which does not yet exist.
 
-eFuse drive support is implemented for ESP32, required by ROM to get past "Using external SPI configuration..." during boot.
+Per-CPU reset fix (CPU0+CPU1 starting from ROM reset vector 0x40000400, stall gated on DPORT bits) is implemented for ESP32 and exported as patches in `qemu-patches/` pinned to upstream commit `1b75d0fd51`. Three patches: `0001` (CPU1 reset), `0002` (CPU0 reset), `0003` (CPU1 during full-system reset).
 
-The tiered radio shim (`none`\|`ble`\|`wifi`\|`both`) is opt-in and driven by the signature database at `work/radio-sig-db.json` (19 examples, IDF v4.4.7). It NOPs radio controller init call sites via `scripts/radio-shim.py`.
+eFuse drive support is implemented for ESP32, required by ROM to get past "Using external SPI configuration..." during boot. Auto-generated as all-zeros 512-byte image when not provided.
+
+The tiered radio shim (`none`\|`ble`\|`wifi`\|`both`) is opt-in and driven by position-independent pattern matching (ELF-derived CALL8 signatures or range-based scan for binaries without hints). Verified on ble_notify (IDF 4.4.7) and Marauder (IDF 4.4.5, not in signature DB). Via `scripts/radio-shim.py`.
 
 ## License
 

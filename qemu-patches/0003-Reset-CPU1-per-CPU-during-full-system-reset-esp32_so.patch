@@ -1,0 +1,56 @@
+From 8f82313ba9cf09e483b7bac34eed595083f9e4d2 Mon Sep 17 00:00:00 2001
+From: Arena Agent <arena-agent@e2b.local>
+Date: Fri, 27 Nov 2026 10:55:44 +0000
+Subject: [PATCH 3/3] Reset CPU1 per-CPU during full-system reset
+ (esp32_soc_reset)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When esp32_soc_reset is called with ESP32_SOC_RESET_ALL (esp_restart,
+watchdog), CPU0 was reset directly but CPU1 was only delegated to a
+comment claiming 'APP CPU reset handled in esp32_cpu_reset via the GPIO
+path' — which is never triggered during system reset. CPU1 kept running
+stale code after reset.
+
+Now CPU1 is reset via the same per-CPU path: PC set to
+XCHAL_RESET_VECTOR_PADDR (0x40000400), stall state re-applied from DPORT,
+so both CPUs restart cleanly from the ROM reset vector after any
+full-system reset.
+---
+ hw/xtensa/esp32.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index 698535f9f6..05a55a5980 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -263,7 +263,24 @@ static void esp32_soc_reset(DeviceState *dev)
+         s->cpu[0].env.sregs[CPENABLE] = 0xff;
+     }
+     if (s->requested_reset & ESP32_SOC_RESET_APPCPU) {
+-        /* APP CPU reset handled in esp32_cpu_reset via the GPIO path. */
++        /* APP CPU: per-CPU reset via the same path as esp32_cpu_reset(n=1).
++         * Reset CPU1, set PC to ROM reset vector, apply stall state from DPORT.
++         */
++        xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
++        remove_cpu_watchpoints(&s->cpu[1]);
++        cpu_reset(CPU(&s->cpu[1]));
++        /* cpu_reset() leaves PC at 0; the ESP32 ROM reset vector is
++         * at XCHAL_RESET_VECTOR_PADDR (0x40000400).  */
++        s->cpu[1].env.pc = XCHAL_RESET_VECTOR_PADDR;
++        s->cpu[1].env.sregs[CPENABLE] = 0xff;
++        /* Re-apply current DPORT stall state after CPU reset.  */
++        bool stall = s->rtc_cntl.cpu_stall_state[1] || s->dport.appcpu_stall_state || (!s->dport.appcpu_clkgate_state);
++        if (stall != s->cpu[1].env.runstall) {
++            if (!stall) {
++                cpu_reset_interrupt(CPU(&s->cpu[1]), CPU_INTERRUPT_HALT);
++            }
++            xtensa_runstall(&s->cpu[1].env, stall);
++        }
+     }
+     s->requested_reset = 0;
+ }
+-- 
+2.39.5
+

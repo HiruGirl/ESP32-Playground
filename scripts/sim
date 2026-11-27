@@ -92,14 +92,15 @@ cmd_run() {
     -icount "$icount"
   )
 
-  # eFuse drive (always attached per board profile)
-  if [[ -f "$ROOT/$efuse_img" ]]; then
-    args+=(-drive "file=$ROOT/$efuse_img,if=none,format=raw,id=efuse"
-           -global "driver=nvram.esp32.efuse,property=drive,value=efuse")
-    echo "  eFuse:   $efuse_img"
-  else
-    echo "  eFuse:   none (image not found: $efuse_img)"
+  # eFuse drive (always attached — auto-generate all-zeros image if missing)
+  local efuse_path="$ROOT/$efuse_img"
+  if [[ ! -f "$efuse_path" ]]; then
+    echo "  eFuse:   generating all-zeros image at $efuse_img (required by ROM)"
+    python3 -c "open('$efuse_path','wb').write(b'\\x00' * 512)"
   fi
+  args+=(-drive "file=$efuse_path,if=none,format=raw,id=efuse"
+         -global "driver=nvram.esp32.efuse,property=drive,value=efuse")
+  echo "  eFuse:   $efuse_img (all-zeros, auto-attached)"
 
   # SD card
   local sd_img=""

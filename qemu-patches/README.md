@@ -11,7 +11,8 @@ These patches are applied on top of the pinned upstream Espressif QEMU commit.
 | Patch | Description |
 |-------|-------------|
 | `0001-Fix-CPU1-per-CPU-reset-to-start-from-ROM-reset-vector.patch` | CPU1 per-CPU reset: initialize PC to `XCHAL_RESET_VECTOR_PADDR` (0x40000400), handle APPCPU_RESET deassert (1→0) to release CPU1 from stall. Without this, CPU1 never starts and the guest deadlocks after "Using external SPI configuration...". |
-| `0002-Add-CPU0-per-CPU-reset-to-match-CPU1-handling.patch` | CPU0 per-CPU reset: same treatment as CPU1. Previously used `qemu_system_reset_request` which reset the entire system. Now both CPUs are handled per-CPU via the GPIO path. Full-system resets (watchdog, esp_restart) still reset both CPUs. |
+| `0002-Add-CPU0-per-CPU-reset-to-match-CPU1-handling.patch` | CPU0 per-CPU reset: same treatment as CPU1. Previously used `qemu_system_reset_request` which reset the entire system. Now both CPUs are handled per-CPU via the GPIO path. |
+| `0003-Reset-CPU1-per-CPU-during-full-system-reset-esp32_soc_reset.patch` | CPU1 per-CPU reset during full-system reset: `esp32_soc_reset` now resets CPU1 via the same per-CPU path (PC = ROM reset vector, DPORT stall state). Previously CPU1 was only delegated to a comment claiming GPIO-path handling which never fires during system reset. Both CPUs now restart cleanly after esp_restart / watchdog. |
 
 ## Apply script
 

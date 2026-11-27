@@ -99,8 +99,16 @@ export class QemuSession extends EventEmitter {
 
     const sd = this.cfg.sdImage ? join(this.tmp, "sd.img") : undefined;
     if (sd && this.cfg.sdImage) copyFileSync(this.cfg.sdImage, sd);
-    const efuse = this.cfg.efuseImage ? join(this.tmp, "efuse.bin") : undefined;
-    if (efuse && this.cfg.efuseImage) copyFileSync(this.cfg.efuseImage, efuse);
+    // eFuse drive is always attached: auto-generate all-zeros image if none provided
+    // (ROM requires valid eFuse reads to exit "Using external SPI configuration...")
+    const efuse = join(this.tmp, "efuse.bin");
+    if (this.cfg.efuseImage) {
+      copyFileSync(this.cfg.efuseImage, efuse);
+    } else {
+      // Generate all-zeros eFuse image (512 bytes) — verified to let ROM proceed
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(efuse, Buffer.alloc(512, 0x00));
+    }
 
     const port = await this.listenBridge();
     this.port = port;

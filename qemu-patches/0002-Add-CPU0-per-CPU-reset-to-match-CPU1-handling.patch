@@ -1,7 +1,7 @@
 From 55443254372a72f78dc2c30e6b7a4947ebac22fd Mon Sep 17 00:00:00 2001
 From: Arena Agent <arena-agent@e2b.local>
 Date: Fri, 27 Nov 2026 10:20:41 +0000
-Subject: [PATCH 2/2] Add CPU0 per-CPU reset to match CPU1 handling
+Subject: [PATCH 2/3] Add CPU0 per-CPU reset to match CPU1 handling
 
 Extend the per-CPU reset approach to CPU0 (Pro CPU). Previously CPU0 reset
 used qemu_system_reset_request which reset the entire system. Now both CPUs

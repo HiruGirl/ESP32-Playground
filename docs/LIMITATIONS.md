@@ -72,27 +72,40 @@ HCI controller, ATT Virtual Phone) is implemented and protocol-level tested.
 read register at `0x3ff5a104` during bring-up ("Using external SPI
 configuration..."). Without a backing eFuse NVRAM drive, reads return 0 and
 the ROM poll never exits, hanging the boot. With a valid eFuse image
-(e.g. `work/efuse-zeros.bin`, 512 all-zero bytes) attached via
+(512 all-zero bytes) attached via
 `-global driver=nvram.esp32.efuse,property=drive,value=efuse`, the ROM poll
-exits and boot proceeds. Backend support: `SessionConfig.efuseImage`, copied
-per session as `efuse.bin` and passed to QEMU as a raw NVRAM drive.
+exits and boot proceeds. Verified: all-zeros eFuse lets blink boot; all-0xFF
+eFuse hangs at ROM (coding_scheme read = 0x3, unsupported). Backend support:
+`SessionConfig.efuseImage`, auto-generated as all-zeros `efuse.bin` per
+session when not provided.
 
-**`rst:0x3` vs `rst:0xc`:**
-- `rst:0x3` (SW_RESET) — software-initiated reset, triggered by the RTC
-  watchdog, `abort()`, panic, or `ets_delay_us` watchdog expiry. Common
-  failure mode when BLE controller init asserts (`esp_bt_controller_init`
-  clock assertion at `bt.c:1549`) or SD mount fails. The radio shim tier
-  `ble` (via `scripts/radio-shim.py`) NOPs `esp_bt_controller_init` /
-  `esp_bt_controller_enable` call sites to bypass this path.
-- `rst:0xc` (RTC_WATCHDOG_RESET) — RTC watchdog reset, typically from the
-  app CPU watchdog (`0x4000fca9` = RTC watchdog protect register). When CPU1
-  stalls at `0x4000fdd0` (ROM bootstrap spin loop) without being released
-  from DPORT stall, the RTC watchdog fires and resets both CPUs. The per-CPU
-  reset fix (QEMU patches `3f946e7fd1` / `5544325437`) releases CPU1 from
-  the DPORT-controlled stall so it runs the app entry point instead of
-  spinning in ROM.
+**ESP32 reset reason codes (`rst:0xN`):** (from RTC_CNTL_RESET_STATE register)
+- `0x01` POWERON_RESET — cold boot
+- `0x03` SW_RESET — software reset (abort, panic, esp_restart via software)
+- `0x07` TG0WDT_SYS_RESET — Timer Group 0 watchdog system reset
+- `0x08` TG1WDT_SYS_RESET — Timer Group 1 watchdog system reset
+- `0x09` RTCWDT_SYS_RESET — RTC watchdog system reset
+- `0x0B` TGWDT_CPU_RESET — Timer Group watchdog CPU reset (single CPU)
+- `0x0C` SW_CPU_RESET — software CPU reset (per-CPU, not system-wide)
+- `0x0F` BROWNOUT_RESET — brownout detector reset
 
-**`0x4000fca9`** is `RTC_CNTL_WDW_PROTECT_REG` (RTC watchdog write-protect
-register). Writing `0x4000fca9` with the correct key disables write
-protection for the RTC watchdog configuration. It appears in logs when code
-touches the RTC watchdog during watchdog feed or reconfiguration.
+Common failure modes: `rst:0x3` when BLE controller init asserts
+(`esp_bt_controller_init` clock assertion at `bt.c:1549`) or SD mount fails.
+The radio shim tier `ble` (via `scripts/radio-shim.py`) NOPs
+`esp_bt_controller_init` / `esp_bt_controller_enable` call sites to bypass
+this path.
+
+**`0x4000fca9`** is a ROM bootloader PC address, not a register. It appears
+in stack traces and backtraces when code executes the ROM bootstrap
+(`0x40000400` → `0x4000fca9` → ...). It is the entry point region of the
+ESP32 ROM binary, mapped at `0x40000000-0x4000ffff`. Not
+`RTC_CNTL_WDW_PROTECT_REG`. QEMU does not include ROM source; gdb backtrace
+from the guest would be needed to identify its exact caller (gdb not
+available in this build environment).
+
+**CPU1 stall at `0x4000fdd0`**: When CPU1 is not released from the DPORT
+controlled stall, it spins in the ROM bootstrap at `0x4000fdd0`. The RTC
+watchdog then fires (`rst:0x7`/`0x08`/`0x09`) and resets both CPUs. The
+per-CPU reset fix (QEMU patches `3f946e7fd1`, `5544325437`, `8f82313ba9`)
+releases CPU1 from the DPORT-controlled stall so it runs the app entry
+point instead of spinning in ROM.

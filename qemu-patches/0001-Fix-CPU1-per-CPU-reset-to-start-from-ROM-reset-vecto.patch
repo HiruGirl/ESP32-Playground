@@ -1,0 +1,125 @@
+From 3f946e7fd199e1790042306f923ab3ee114fc650 Mon Sep 17 00:00:00 2001
+From: Arena Agent <arena-agent@e2b.local>
+Date: Thu, 26 Nov 2026 11:17:44 +0000
+Subject: [PATCH 1/2] Fix CPU1 per-CPU reset to start from ROM reset vector
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ESP32 CPU1 (App CPU) was never started by QEMU because esp32_cpu_reset
+only handled the reset assert (level=1) path and left CPU1 stalled
+indefinitely. On deassert (level=0), CPU1 was never released from
+stall, so it stayed at PC=0x00000000 and the cross-core stall flag in
+esp_dport_access_stall_other_cpu was never cleared, causing a
+permanent deadlock after 'Using external SPI configuration...'.
+
+Changes:
+- Initialize CPU1 PC to XCHAL_RESET_VECTOR_PADDR (0x40000400) instead
+  of leaving it at 0 after cpu_reset(), so CPU1 runs the ROM bootstrap
+- Handle the APPCPU_RESET deassert (1→0) edge by releasing CPU1 from
+  stall when DPORT CLK is on and RUNSTALL is off
+- Remove the APP CPU reset handling from esp32_soc_reset since it is
+  now fully handled via the GPIO path in esp32_cpu_reset
+- Use XCHAL_RESET_VECTOR_PADDR (0x40000400) instead of hard-coded
+  0x40000000 for the ROM reset vector address
+
+CPU1 now starts and runs IDF code (verified: PC=0x4008462f, 0x40084637
+in IRAM app space, 8 bytes apart = sequential execution). Marauder gets
+past 'Using external SPI configuration...' and prints 'ESP-IDF version
+is: v4.4.5' before hitting the esp_bt_controller_init assert.
+---
+ hw/xtensa/esp32.c | 66 ++++++++++++++++++++++++++---------------------
+ 1 file changed, 37 insertions(+), 29 deletions(-)
+
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index c8159560e6..1bbd9a87fc 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -115,27 +115,47 @@ static void esp32_cpu_reset(void* opaque, int n, int level)
+     if (level) {
+         s->requested_reset = (n == 0) ? ESP32_SOC_RESET_PROCPU : ESP32_SOC_RESET_APPCPU;
+         s->rtc_cntl.reset_cause[n] = ESP32_SW_CPU_RESET;
+-        if (n == 1) {
+-            /* App CPU: reset synchronously and start from the boot address
+-             * configured through DPORT_APPCPU_BOOT_ADDR. QEMU does not load a
+-             * real ESP32 ROM for the app CPU, so its reset vector is erased
+-             * flash (0xFF); without this the app CPU strands at the invalid
+-             * reset vector. Using qemu_system_reset_request here would reset the
+-             * whole system (reboot loop); instead reset only CPU1. This uses the
+-             * architectural boot-address register, not a hard-coded PC.
+-             */
++    }
++    if (n == 1) {
++        /* App CPU: per-CPU reset driven by DPORT APPCPU_RESET (1→0).
++         * On assert (level=1): reset CPU1, set PC to ROM reset vector,
++         * apply stall state from DPORT. CPU1 stays stalled until DPORT
++         * releases RUNSTALL.
++         * On deassert (level=0): release CPU1 from reset/stall so it can
++         * start running the ROM bootstrap from 0x40000400.
++         */
++        if (level) {
++            xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
++            remove_cpu_watchpoints(&s->cpu[1]);
+             cpu_reset(CPU(&s->cpu[1]));
++            /* cpu_reset() leaves PC at 0; the ESP32 ROM reset vector is
++             * at XCHAL_RESET_VECTOR_PADDR (0x40000400); start CPU1 there
++             * so it can run the ROM bootstrap.  */
++            s->cpu[1].env.pc = XCHAL_RESET_VECTOR_PADDR;
+             s->cpu[1].env.sregs[CPENABLE] = 0xff;
+-            if (s->dport.appcpu_boot_addr) {
+-                s->cpu[1].env.pc = s->dport.appcpu_boot_addr;
++            /* Re-apply current DPORT stall state after CPU reset.  */
++            bool stall = s->rtc_cntl.cpu_stall_state[1] || s->dport.appcpu_stall_state || (!s->dport.appcpu_clkgate_state);
++            if (stall != s->cpu[1].env.runstall) {
++                if (!stall) {
++                    cpu_reset_interrupt(CPU(&s->cpu[1]), CPU_INTERRUPT_HALT);
++                }
++                xtensa_runstall(&s->cpu[1].env, stall);
+             }
+         } else {
+-            /* Use different cause for PRO CPU so that its reset doesn't cause
+-             * QEMU to exit, when -no-reboot option is given.
+-             */
+-            ShutdownCause cause = SHUTDOWN_CAUSE_GUEST_RESET;
+-            qemu_system_reset_request(cause);
++            /* APPCPU_RESET deasserted (1→0): release CPU1 from stall so
++             * it starts executing from the ROM reset vector.  */
++            bool stall = s->rtc_cntl.cpu_stall_state[1] || s->dport.appcpu_stall_state || (!s->dport.appcpu_clkgate_state);
++            if (!stall && s->cpu[1].env.runstall) {
++                xtensa_runstall(&s->cpu[1].env, false);
++                cpu_reset_interrupt(CPU(&s->cpu[1]), CPU_INTERRUPT_HALT);
++            }
+         }
++    } else {
++        /* Use different cause for PRO CPU so that its reset doesn't cause
++         * QEMU to exit, when -no-reboot option is given.
++         */
++        ShutdownCause cause = SHUTDOWN_CAUSE_GUEST_RESET;
++        qemu_system_reset_request(cause);
+     }
+ }
+ 
+@@ -221,19 +241,7 @@ static void esp32_soc_reset(DeviceState *dev)
+         s->cpu[0].env.sregs[CPENABLE] = 0xff;
+     }
+     if (s->requested_reset & ESP32_SOC_RESET_APPCPU) {
+-        xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
+-        remove_cpu_watchpoints(&s->cpu[1]);
+-        cpu_reset(CPU(&s->cpu[1]));
+-        s->cpu[1].env.sregs[CPENABLE] = 0xff;
+-        /* Start the app CPU from the boot address configured through
+-         * DPORT_APPCPU_BOOT_ADDR. QEMU does not load a real ESP32 ROM for the
+-         * app CPU, so its reset vector is erased flash (0xFF); without this the
+-         * app CPU strands at the invalid reset vector instead of running the
+-         * image's app-CPU entry point. This uses the architectural boot address
+-         * register, not a hard-coded PC. */
+-        if (s->dport.appcpu_boot_addr) {
+-            s->cpu[1].env.pc = s->dport.appcpu_boot_addr;
+-        }
++        /* APP CPU reset handled in esp32_cpu_reset via the GPIO path. */
+     }
+     s->requested_reset = 0;
+ }
+-- 
+2.39.5
+

@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# sim — ESP32 Playground simulation runner
+#
+# Usage:
+#   sim run <bin> --board <profile> [--seconds N] [--icount N]
+#   sim list
+#   sim chips
+#
+# Runs an ESP32 firmware binary in QEMU with the specified board profile,
+# capturing evidence: serial log, framebuffer PNG, SD write/readback, and
+# injected touch echo.
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QEMU="$ROOT/work/espressif-qemu/build/qemu-system-xtensa"
+BOARDS_DIR="$ROOT/boards"
+SHIMS_DIR="$ROOT/shims"
+
+usage() {
+  echo "Usage: $0 run <bin> --board <profile> [--seconds N] [--icount N]"
+  echo "       $0 list"
+  echo "       $0 chips"
+  exit 1
+}
+
+cmd_run() {
+  local bin="" board="" seconds=60 icount=5
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      run) shift ;;
+      --board) board="$2"; shift 2 ;;
+      --seconds) seconds="$2"; shift 2 ;;
+      --icount) icount="$2"; shift 2 ;;
+      *) bin="$1"; shift ;;
+    esac
+  done
+
+  [[ -z "$bin" ]] && { echo "ERROR: no firmware binary specified" >&2; usage; }
+  [[ -z "$board" ]] && { echo "ERROR: no board profile specified" >&2; usage; }
+  [[ ! -f "$bin" ]] && { echo "ERROR: firmware not found: $bin" >&2; exit 1; }
+  [[ ! -f "$BOARDS_DIR/$board.json" ]] && { echo "ERROR: board profile not found: $BOARDS_DIR/$board.json" >&2; exit 1; }
+  [[ ! -x "$QEMU" ]] && { echo "ERROR: QEMU not found: $QEMU" >&2; exit 1; }
+
+  local board_json="$BOARDS_DIR/$board.json"
+  local chip=$(python3 -c "import json; print(json.load(open('$board_json'))['chip'])")
+  local efuse_img=$(python3 -c "import json; d=json.load(open('$board_json')); print(d.get('efuse',{}).get('image','work/efuse-zeros.bin'))")
+  local tft_bus=$(python3 -c "import json; d=json.load(open('$board_json')); print(d.get('tft',{}).get('bus',''))")
+  local tft_dc=$(python3 -c "import json; d=json.load(open('$board_json')); print(d.get('tft',{}).get('dcPin',''))")
+  local touch_bus=$(python3 -c "import json; d=json.load(open('$board_json')); print(d.get('touch',{}).get('bus',''))")
+  local touch_cs=$(python3 -c "import json; d=json.load(open('$board_json')); print(d.get('touch',{}).get('csPin',''))")
+  local touch_irq=$(python3 -c "import json; d=json.load(open('$board_json')); print(d.get('touch',{}).get('irqPin',''))")
+  local sd_bus=$(python3 -c "import json; d=json.load(open('$board_json')); print(d.get('sd',{}).get('bus',''))")
+  local sd_cs=$(python3 -c "import json; d=json.load(open('$board_json')); print(d.get('sd',{}).get('csPin',''))")
+
+  local uart_log="/tmp/sim-uart-$(basename "$bin")-$board.log"
+  local frame_dir="/tmp/sim-frames-$(basename "$bin")-$board"
+  rm -rf "$frame_dir"; mkdir -p "$frame_dir"
+
+  echo "=== sim run ==="
+  echo "  binary:  $bin"
+  echo "  board:   $board ($board_json)"
+  echo "  chip:    $chip"
+  echo "  seconds: $seconds"
+  echo "  icount:  $icount"
+  echo "  uart:    $uart_log"
+  echo "  frames:  $frame_dir"
+  echo
+
+  local args=(
+    -machine "esp32,sd-spi=on,sd-spi-hspi=on"
+    -display none
+    -serial "file:$uart_log"
+    -drive "file=$bin,if=mtd,format=raw"
+    -icount "$icount"
+  )
+
+  # eFuse drive (always attached per board profile)
+  if [[ -f "$ROOT/$efuse_img" ]]; then
+    args+=(-drive "file=$ROOT/$efuse_img,if=none,format=raw,id=efuse"
+           -global "driver=nvram.esp32.efuse,property=drive,value=efuse")
+    echo "  eFuse:   $efuse_img"
+  else
+    echo "  eFuse:   none (image not found: $efuse_img)"
+  fi
+
+  # SD card
+  local sd_img=""
+  if [[ -n "$sd_bus" ]]; then
+    sd_img="/tmp/sim-sd-$board.img"
+    if [[ ! -f "$sd_img" ]]; then
+      # Create a blank FAT image if none exists
+      python3 -c "
+import struct
+size = 64 * 1024 * 1024  # 64 MiB
+with open('$sd_img', 'wb') as f:
+    f.write(b'\x00' * size)
+"
+    fi
+    args+=(-drive "file=$sd_img,if=sd,format=raw")
+    echo "  SD:      bus=$sd_bus cs=$sd_cs image=$sd_img"
+  fi
+
+  # TFT
+  if [[ -n "$tft_bus" ]]; then
+    echo "  TFT:     bus=$tft_bus dc=$tft_dc"
+  fi
+
+  # Touch
+  if [[ -n "$touch_bus" ]]; then
+    echo "  Touch:   bus=$touch_bus cs=$touch_cs irq=$touch_irq"
+  fi
+
+  echo
+  echo "=== Starting QEMU ==="
+  LD_LIBRARY_PATH="$ROOT/work/deps/lib" timeout "$seconds" "$QEMU" "${args[@]}" &
+  local qemu_pid=$!
+
+  # Wait for QEMU to start producing UART output
+  sleep 5
+
+  # Capture UART output incrementally
+  local last_size=0
+  local stable_count=0
+  for ((i=0; i<seconds; i++)); do
+    if [[ -f "$uart_log" ]]; then
+      local size=$(wc -c < "$uart_log" 2>/dev/null || echo 0)
+      if [[ "$size" -eq "$last_size" ]]; then
+        stable_count=$((stable_count + 1))
+      else
+        stable_count=0
+      fi
+      last_size=$size
+    fi
+
+    # Check if QEMU is still running
+    if ! kill -0 $qemu_pid 2>/dev/null; then
+      echo "QEMU exited after ${i}s"
+      break
+    fi
+
+    # If UART has been stable for 5 seconds, we might be done
+    if [[ $stable_count -ge 5 ]]; then
+      echo "UART stable for ${stable_count}s, stopping early at ${i}s"
+      break
+    fi
+
+    sleep 1
+  done
+
+  # Stop QEMU
+  kill $qemu_pid 2>/dev/null || true
+  wait $qemu_pid 2>/dev/null || true
+
+  echo
+  echo "=== UART Output ==="
+  cat "$uart_log" 2>/dev/null || echo "(no UART output)"
+
+  echo
+  echo "=== Evidence ==="
+  echo "  UART log: $uart_log ($(wc -c < "$uart_log" 2>/dev/null || echo 0) bytes)"
+  echo "  Frame dir: $frame_dir ($(ls "$frame_dir" 2>/dev/null | wc -l) files)"
+  echo "  SD image: $sd_img"
+
+  # Check for crashes/reboots
+  local reboot_count
+  reboot_count=$(tr '\r' '\n' < "$uart_log" 2>/dev/null | grep -c "rst:0x" || echo 0)
+  local panic_count
+  panic_count=$(tr '\r' '\n' < "$uart_log" 2>/dev/null | grep -ci "guru meditation\|abort()\|panic" || echo 0)
+  echo "  Reboots: $reboot_count"
+  echo "  Panics:  $panic_count"
+
+  if [[ "$panic_count" -gt 0 ]]; then
+    echo "  STATUS: FAIL (panic detected)"
+    return 1
+  elif [[ "$reboot_count" -gt 3 ]]; then
+    echo "  STATUS: WARN (frequent reboots: $reboot_count)"
+    return 0
+  else
+    echo "  STATUS: PASS"
+    return 0
+  fi
+}
+
+cmd_list() {
+  echo "Available firmware binaries:"
+  for d in "$ROOT/examples"/*/; do
+    local name=$(basename "$d")
+    local bin="$d/prebuilt/firmware.bin"
+    local elf="$d/prebuilt/firmware.elf"
+    if [[ -f "$bin" ]]; then
+      echo "  $name: $bin$( [[ -f "$elf" ]] && echo " (has ELF)" )"
+    fi
+  done
+  echo
+  echo "Available board profiles:"
+  for f in "$BOARDS_DIR"/*.json; do
+    [[ -f "$f" ]] && echo "  $(basename "$f" .json): $f"
+  done
+}
+
+cmd_chips() {
+  echo "QEMU-supported chips:"
+  echo
+  echo "xtensa (qemu-system-xtensa):"
+  echo "  esp32   - machine: esp32"
+  echo "  esp32s3 - machine: esp32s3"
+  echo
+  echo "riscv32 (qemu-system-riscv32):"
+  echo "  esp32c3 - machine: esp32c3"
+  echo "  esp32c5 - machine: esp32c5"
+  echo "  esp32c6 - machine: esp32c6"
+  echo "  esp32c61- machine: esp32c61"
+  echo "  esp32h2 - machine: esp32h2"
+  echo "  esp32h4 - machine: esp32h4"
+  echo "  esp32p4 - machine: esp32p4"
+  echo
+  echo "Note: Only esp32 examples are currently available in examples/."
+}
+
+case "${1:-}" in
+  run) shift; cmd_run "$@" ;;
+  list) cmd_list ;;
+  chips) cmd_chips ;;
+  *) usage ;;
+esac

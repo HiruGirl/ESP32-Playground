@@ -1,0 +1,26 @@
+{
+  "name": "cyd-2432S028",
+  "description": "CheapYellowDisplay 2.4\" 240x320 ESP32-WROOM board",
+  "chip": "esp32",
+  "tft": {
+    "bus": 2,
+    "model": "ili9341",
+    "dcPin": 2,
+    "width": 240,
+    "height": 320
+  },
+  "touch": {
+    "bus": 3,
+    "model": "xpt2046",
+    "csPin": 33,
+    "irqPin": 36
+  },
+  "sd": {
+    "bus": 2,
+    "csPin": 5,
+    "model": "spi-sd"
+  },
+  "efuse": {
+    "image": "work/efuse-zeros.bin"
+  }
+}

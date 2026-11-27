@@ -1,0 +1,72 @@
+From 55443254372a72f78dc2c30e6b7a4947ebac22fd Mon Sep 17 00:00:00 2001
+From: Arena Agent <arena-agent@e2b.local>
+Date: Fri, 27 Nov 2026 10:20:41 +0000
+Subject: [PATCH 2/2] Add CPU0 per-CPU reset to match CPU1 handling
+
+Extend the per-CPU reset approach to CPU0 (Pro CPU). Previously CPU0 reset
+used qemu_system_reset_request which reset the entire system. Now both CPUs
+are handled per-CPU via the GPIO path in esp32_cpu_reset:
+
+- On assert: reset CPU, set PC to ROM reset vector, apply stall state
+- On deassert: release CPU from stall when RTC CNTL allows
+
+This ensures full-system resets (watchdog, esp_restart) still reset both
+CPUs, and CPU0 starts from XCHAL_RESET_VECTOR_PADDR (0x40000400) like CPU1.
+---
+ hw/xtensa/esp32.c | 32 +++++++++++++++++++++++++++-----
+ 1 file changed, 27 insertions(+), 5 deletions(-)
+
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index 1bbd9a87fc..698535f9f6 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -113,7 +113,6 @@ static void esp32_cpu_reset(void* opaque, int n, int level)
+ {
+     Esp32SocState *s = ESP32_SOC(opaque);
+     if (level) {
+-        s->requested_reset = (n == 0) ? ESP32_SOC_RESET_PROCPU : ESP32_SOC_RESET_APPCPU;
+         s->rtc_cntl.reset_cause[n] = ESP32_SW_CPU_RESET;
+     }
+     if (n == 1) {
+@@ -151,11 +150,34 @@ static void esp32_cpu_reset(void* opaque, int n, int level)
+             }
+         }
+     } else {
+-        /* Use different cause for PRO CPU so that its reset doesn't cause
+-         * QEMU to exit, when -no-reboot option is given.
++        /* Pro CPU: per-CPU reset driven by RTC_CPU_RESET_GPIO[0].
++         * On assert (level=1): reset CPU0, set PC to ROM reset vector,
++         * apply stall state from RTC CNTL.
++         * On deassert (level=0): release CPU0 from stall.
+          */
+-        ShutdownCause cause = SHUTDOWN_CAUSE_GUEST_RESET;
+-        qemu_system_reset_request(cause);
++        if (level) {
++            xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
++            remove_cpu_watchpoints(&s->cpu[0]);
++            cpu_reset(CPU(&s->cpu[0]));
++            /* cpu_reset() leaves PC at 0; the ESP32 ROM reset vector is
++             * at XCHAL_RESET_VECTOR_PADDR (0x40000400).  */
++            s->cpu[0].env.pc = XCHAL_RESET_VECTOR_PADDR;
++            s->cpu[0].env.sregs[CPENABLE] = 0xff;
++            /* Re-apply current RTC CNTL stall state after CPU reset.  */
++            bool stall = s->rtc_cntl.cpu_stall_state[0];
++            if (stall != s->cpu[0].env.runstall) {
++                if (!stall) {
++                    cpu_reset_interrupt(CPU(&s->cpu[0]), CPU_INTERRUPT_HALT);
++                }
++                xtensa_runstall(&s->cpu[0].env, stall);
++            }
++        } else {
++            bool stall = s->rtc_cntl.cpu_stall_state[0];
++            if (!stall && s->cpu[0].env.runstall) {
++                xtensa_runstall(&s->cpu[0].env, false);
++                cpu_reset_interrupt(CPU(&s->cpu[0]), CPU_INTERRUPT_HALT);
++            }
++        }
+     }
+ }
+ 
+-- 
+2.39.5
+

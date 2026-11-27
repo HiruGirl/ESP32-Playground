@@ -1,5 +1,5 @@
 // QEMU session manager: process lifecycle + bridge socket + QMP control.
-import { ChildProcess, spawn } from "node:child_process";
+import { ChildProcess, spawn, execSync } from "node:child_process";
 import { createServer, Server, Socket } from "node:net";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, writeFileSync, rmSync, existsSync, copyFileSync, openSync, readFileSync } from "node:fs";
@@ -20,6 +20,10 @@ export interface SessionConfig {
   efuseImage?: string; // optional eFuse image; copied per session (required
                        // by ROM for Marauder to get past "Using external SPI
                        // configuration...")
+  radio?: "none" | "ble" | "wifi" | "both"; // tiered opt-in radio shim;
+                                            // "ble" NOPs BT controller init,
+                                            // "wifi" NOPs WiFi init,
+                                            // "both" NOPs both, "none" off
 }
 
 export interface SessionInfo {
@@ -73,6 +77,25 @@ export class QemuSession extends EventEmitter {
     // Flash image is copied per session so NVS persists across resets/restarts.
     const flash = join(this.tmp, "flash.bin");
     copyFileSync(this.cfg.firmware, flash);
+
+    // Tiered opt-in radio shim: patch the firmware copy before QEMU launches.
+    // The shim NOPs out radio controller init call sites based on the signature DB.
+    if (this.cfg.radio && this.cfg.radio !== "none") {
+      const shim = join(resolve(process.cwd(), "scripts", "radio-shim.py"));
+      const sigDb = join(resolve(process.cwd(), "work", "radio-sig-db.json"));
+      const out = join(this.tmp, `flash.${this.cfg.radio}.bin`);
+      try {
+        execSync(
+          `python3 "${shim}" "${flash}" ${this.cfg.radio} --sig-db "${sigDb}" --out "${out}"`,
+          { stdio: "pipe", cwd: resolve(process.cwd()) },
+        );
+        // Replace flash with the shimmed copy so QEMU boots the patched image.
+        copyFileSync(out, flash);
+      } catch (err) {
+        // Non-fatal: fall back to unmodified firmware if shim fails.
+        console.warn(`[radio-shim] tier ${this.cfg.radio} failed for ${this.cfg.firmware}: ${err}`);
+      }
+    }
 
     const sd = this.cfg.sdImage ? join(this.tmp, "sd.img") : undefined;
     if (sd && this.cfg.sdImage) copyFileSync(this.cfg.sdImage, sd);

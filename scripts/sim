@@ -2,13 +2,14 @@
 # sim — ESP32 Playground simulation runner
 #
 # Usage:
-#   sim run <bin> --board <profile> [--seconds N] [--icount N]
+#   sim run <bin> --board <profile> [--seconds N] [--icount N] [--radio <tier>]
 #   sim list
 #   sim chips
 #
 # Runs an ESP32 firmware binary in QEMU with the specified board profile,
-# capturing evidence: serial log, framebuffer PNG, SD write/readback, and
-# injected touch echo.
+# capturing evidence: serial log, SD write/readback, reboot/panic detection.
+#
+# TFT frame capture and touch echo require the backend (see backend/src/).
 #
 set -euo pipefail
 
@@ -18,20 +19,21 @@ BOARDS_DIR="$ROOT/boards"
 SHIMS_DIR="$ROOT/shims"
 
 usage() {
-  echo "Usage: $0 run <bin> --board <profile> [--seconds N] [--icount N]"
+  echo "Usage: $0 run <bin> --board <profile> [--seconds N] [--icount N] [--radio <tier>]"
   echo "       $0 list"
   echo "       $0 chips"
   exit 1
 }
 
 cmd_run() {
-  local bin="" board="" seconds=60 icount=5
+  local bin="" board="" seconds=60 icount=5 radio="none"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       run) shift ;;
       --board) board="$2"; shift 2 ;;
       --seconds) seconds="$2"; shift 2 ;;
       --icount) icount="$2"; shift 2 ;;
+      --radio) radio="$2"; shift 2 ;;
       *) bin="$1"; shift ;;
     esac
   done
@@ -67,11 +69,26 @@ cmd_run() {
   echo "  frames:  $frame_dir"
   echo
 
+  # Radio shim (tiered opt-in): patch firmware copy before QEMU launches
+  local run_bin="$bin"
+  local elf_bin=""
+  if [[ "$radio" != "none" ]]; then
+    # Look for matching ELF next to the bin
+    elf_bin="${bin%.bin}.elf"
+    local shim_out="/tmp/sim-shimmed-$(basename "$bin")-${radio}.bin"
+    if python3 "$ROOT/scripts/radio-shim.py" "$bin" "$radio" --elf "$elf_bin" --sig-db "$ROOT/work/radio-sig-db.json" --out "$shim_out" 2>/dev/null; then
+      run_bin="$shim_out"
+      echo "  Radio:   $radio (shim applied via radio-shim.py)"
+    else
+      echo "  Radio:   $radio (shim skipped, using unmodified firmware)"
+    fi
+  fi
+
   local args=(
     -machine "esp32,sd-spi=on,sd-spi-hspi=on"
     -display none
     -serial "file:$uart_log"
-    -drive "file=$bin,if=mtd,format=raw"
+    -drive "file=$run_bin,if=mtd,format=raw"
     -icount "$icount"
   )
 
@@ -163,10 +180,13 @@ with open('$sd_img', 'wb') as f:
   echo "  SD image: $sd_img"
 
   # Check for crashes/reboots
-  local reboot_count
-  reboot_count=$(tr '\r' '\n' < "$uart_log" 2>/dev/null | grep -c "rst:0x" || echo 0)
-  local panic_count
-  panic_count=$(tr '\r' '\n' < "$uart_log" 2>/dev/null | grep -ci "guru meditation\|abort()\|panic" || echo 0)
+  local reboot_count=0 panic_count=0
+  if [[ -f "$uart_log" ]]; then
+    reboot_count=$(tr '\r' '\n' < "$uart_log" 2>/dev/null | grep -c "rst:0x" || true)
+    reboot_count=${reboot_count:-0}
+    panic_count=$(tr '\r' '\n' < "$uart_log" 2>/dev/null | grep -ci "guru meditation\|abort()\|panic" || true)
+    panic_count=${panic_count:-0}
+  fi
   echo "  Reboots: $reboot_count"
   echo "  Panics:  $panic_count"
 

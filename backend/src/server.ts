@@ -321,7 +321,7 @@ function describeExample(name: string): string {
 
 app.post("/api/sessions", (req, res) => {
   try {
-    const { chip = "esp32", firmware, elf, icount, tft, sdImage, sdBus, touch } = req.body ?? {};
+    const { chip = "esp32", firmware, elf, icount, tft, sdImage, sdBus, touch, radio } = req.body ?? {};
     if (!firmware || typeof firmware !== "string") return res.status(400).json({ error: "firmware path required" });
     const fw = resolve(firmware);
     if (!fw.startsWith(ROOT) || !existsSync(fw)) return res.status(400).json({ error: "firmware not found (must be inside workspace)" });
@@ -334,7 +334,17 @@ app.post("/api/sessions", (req, res) => {
       if (!sd.startsWith(ROOT + "/") || !existsSync(sd) || !statSync(sd).isFile()) return res.status(400).json({ error: "SD image not found (must be inside workspace)" });
     }
     const id = randomUUID().slice(0, 8);
-    const cfg: SessionConfig = { chip, firmware: fw, elf: elf && existsSync(resolve(elf)) ? resolve(elf) : undefined, icount, tft, touch, sdImage: sd, sdBus };
+    const cfg: SessionConfig = {
+      chip,
+      firmware: fw,
+      elf: elf && existsSync(resolve(elf)) ? resolve(elf) : undefined,
+      icount,
+      tft,
+      touch,
+      sdImage: sd,
+      sdBus,
+      radio: radio === "none" || radio === "ble" || radio === "wifi" || radio === "both" ? radio : undefined,
+    };
     const session = new QemuSession(id, cfg, chip === "esp32c3" ? QEMU_RISCV : QEMU_BIN);
     const b = bundle(session);
     sessions.set(id, b);

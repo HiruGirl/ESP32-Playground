@@ -73,6 +73,28 @@ ESP-IDF toolchain is needed to try the playground. To rebuild examples, see
 - [docs/TESTING.md](docs/TESTING.md) — running the e2e suite
 - [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — known limitations and issues
 
+## Chip Coverage Support Matrix
+
+| Chip | Architecture | QEMU Machine | Per-CPU Reset | eFuse Drive | SD Card | TFT | Touch | Radio Shim | Examples |
+|------|-------------|--------------|---------------|-------------|---------|-----|-------|------------|----------|
+| ESP32 | Xtensa | `esp32` | ✅ CPU0+CPU1 | ✅ | ✅ (spi bus 2/3) | ✅ (spi bus 2) | ✅ (spi bus 3) | ✅ tiered | blink, ble_notify, ble_uart_echo, arduino_wifi_led, ... |
+| ESP32-S3 | Xtensa | `esp32s3` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| ESP32-C3 | RISC-V | `esp32c3` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| ESP32-C5 | RISC-V | `esp32c5` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| ESP32-C6 | RISC-V | `esp32c6` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| ESP32-C61 | RISC-V | `esp32c61` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| ESP32-H2 | RISC-V | `esp32h2` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| ESP32-H4 | RISC-V | `esp32h4` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| ESP32-P4 | RISC-V | `esp32p4` | ⚠️ partial | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+
+Legend: ✅ fully supported, ⚠️ QEMU machine exists but no per-CPU reset fix or board-level peripherals, ❌ not supported.
+
+Per-CPU reset fix (CPU0+CPU1 starting from ROM reset vector 0x40000400, stall gated on DPORT bits) is implemented for ESP32 and exported as patches in `qemu-patches/` pinned to upstream commit `1b75d0fd51`.
+
+eFuse drive support is implemented for ESP32, required by ROM to get past "Using external SPI configuration..." during boot.
+
+The tiered radio shim (`none`\|`ble`\|`wifi`\|`both`) is opt-in and driven by the signature database at `work/radio-sig-db.json` (19 examples, IDF v4.4.7). It NOPs radio controller init call sites via `scripts/radio-shim.py`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Third-party components are listed in

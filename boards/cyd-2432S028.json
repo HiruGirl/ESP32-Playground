@@ -16,7 +16,7 @@
     "irqPin": 36
   },
   "sd": {
-    "bus": 2,
+    "bus": 3,
     "csPin": 5,
     "model": "spi-sd"
   },

@@ -47,6 +47,8 @@ interface SessionBundle {
   adc: Record<number, number>;
   rmt: string[];
   logs: string[];
+  pendingFromQemu: any[]; // buffered QEMU→WebSocket messages (no client connected yet)
+  pendingFromQemu: any[]; // buffered QEMU→WebSocket messages (no client connected yet)
 }
 
 const sessions = new Map<string, SessionBundle>();
@@ -78,7 +80,7 @@ function bundle(session: QemuSession): SessionBundle {
     session, wifi, ble,
     uart: { data: [], timestamps: true },
     gpioLevels: {}, gpioModes: {}, ledc: null, displays: {}, lcdText: "",
-    adc: {}, rmt: [], logs: [],
+    adc: {}, rmt: [], logs: [], pendingFromQemu: [],
   };
   session.on("bridge", (m) => {
     switch (m.type) {
@@ -176,8 +178,16 @@ const clients = new Map<string, Set<WebSocket>>();
 
 function broadcast(sid: string, msg: unknown) {
   const set = clients.get(sid);
-  if (!set) return;
   const data = JSON.stringify(msg);
+  if (!set || set.size === 0) {
+    // No WebSocket client connected — buffer for later delivery
+    const b = sessions.get(sid);
+    if (b) {
+      b.pendingFromQemu.push(data);
+      if (b.pendingFromQemu.length > 10000) b.pendingFromQemu.shift();
+    }
+    return;
+  }
   for (const ws of set) if (ws.readyState === WebSocket.OPEN) ws.send(data);
 }
 
@@ -186,6 +196,14 @@ wss.on("connection", (ws, req) => {
   const sid = url.searchParams.get("session") ?? "";
   if (!clients.has(sid)) clients.set(sid, new Set());
   clients.get(sid)!.add(ws);
+  // Flush any buffered QEMU→WebSocket messages
+  const b = sessions.get(sid);
+  if (b) {
+    for (const data of b.pendingFromQemu) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    }
+    b.pendingFromQemu = [];
+  }
   ws.on("close", () => clients.get(sid)?.delete(ws));
   ws.on("message", async (raw) => {
     try {

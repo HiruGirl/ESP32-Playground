@@ -84,8 +84,12 @@ cmd_run() {
     fi
   fi
 
+  local sd_machine_opts="esp32,sd-spi=on"
+  if [[ "$sd_bus" == "2" ]]; then
+    sd_machine_opts="$sd_machine_opts,sd-spi-hspi=on"
+  fi
   local args=(
-    -machine "esp32,sd-spi=on,sd-spi-hspi=on"
+    -machine "$sd_machine_opts"
     -display none
     -serial "file:$uart_log"
     -drive "file=$run_bin,if=mtd,format=raw"
